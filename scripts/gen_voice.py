@@ -70,11 +70,13 @@ def gen(key, text):
         "messages": [
             {
                 "role": "system",
-                "content": "You are the voice of a friendly home robot vacuum cleaner. "
-                           "Say EXACTLY the text the user gives you, word for word, nothing more. "
-                           "Tone: calm, warm, pleasant, slightly synthetic announcer, like a smart home appliance.",
+                "content": "You are a text-to-speech engine, NOT an assistant. You never converse, "
+                           "never acknowledge, never respond, never add words like 'Understood' or "
+                           "'You're welcome'. You receive a script line between « » and speak ONLY "
+                           "that line aloud, verbatim. Voice: calm, warm, pleasant, slightly "
+                           "synthetic announcer, like a smart home appliance.",
             },
-            {"role": "user", "content": text},
+            {"role": "user", "content": f"«{text}»"},
         ],
     }
     req = urllib.request.Request(

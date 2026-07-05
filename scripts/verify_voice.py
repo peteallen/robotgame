@@ -18,6 +18,9 @@ from gen_voice import LINES, api_key, OUT
 MODEL = os.environ.get("TRANSCRIBE_MODEL", "openai/gpt-audio")
 
 
+FILLER = re.compile(r"provide the audio|play the audio|transcribe it|audio file", re.I)
+
+
 def transcribe(path: Path) -> str:
     data = base64.b64encode(path.read_bytes()).decode()
     body = {
@@ -26,8 +29,8 @@ def transcribe(path: Path) -> str:
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "text", "text": "Transcribe this audio EXACTLY, word for word. Output only the transcription, nothing else."},
                 {"type": "input_audio", "input_audio": {"data": data, "format": "wav"}},
+                {"type": "text", "text": "Transcribe the attached audio EXACTLY, word for word. Output only the transcription."},
             ],
         }],
     }
@@ -36,11 +39,18 @@ def transcribe(path: Path) -> str:
         data=json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {api_key()}", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=180) as res:
-        out = json.loads(res.read())
-    if "error" in out:
-        raise RuntimeError(out["error"])
-    return (out["choices"][0]["message"].get("content") or "").strip()
+    last = ""
+    for attempt in range(3):
+        with urllib.request.urlopen(req, timeout=180) as res:
+            out = json.loads(res.read())
+        if "error" in out:
+            raise RuntimeError(out["error"])
+        last = (out["choices"][0]["message"].get("content") or "").strip()
+        # the model sometimes ignores the attachment and asks for the audio;
+        # that's a transport flake, not a transcription — retry
+        if not FILLER.search(last):
+            return last
+    return last
 
 
 def norm(s: str) -> str:
