@@ -51,9 +51,10 @@ export class Room {
       },
       {
         name: 'catbed', sprite: 'catbed',
-        cx: 165, cy: 330, w: 200, h: 150,
-        foot: { x: 80, y: 285, w: 170, h: 100 },
-        baseline: 388,
+        // below the HUD pill stack so the controls never cover it
+        cx: 165, cy: 435, w: 200, h: 150,
+        foot: { x: 80, y: 390, w: 170, h: 100 },
+        baseline: 493,
       },
       {
         name: 'basket', sprite: 'basket',

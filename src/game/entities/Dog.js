@@ -5,7 +5,7 @@ import { TAU, rand, pick, chance, dist, angleTo, angleApproach, clamp, damp } fr
 export class Dog {
   constructor(game) {
     this.game = game;
-    this.home = { x: 165, y: 322 };
+    this.home = { x: 165, y: 427 };
     this.x = this.home.x;
     this.y = this.home.y;
     this.state = 'sleep'; // sleep | sit | walk | ride | startle | goPotty | circling | squat | proud
