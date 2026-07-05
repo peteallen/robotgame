@@ -325,13 +325,23 @@ export class Game {
       return;
     }
     if (hit === 'toybox') {
-      // a toy pops out!
+      // a toy LAUNCHES clear across the room!
       const kind = pick(['toy_ball', 'toy_block']);
-      const t = this.dirt.spawn(kind, 1480, 560, { drop: 60 });
-      t.vx = rand(-260, -120);
-      t.vy = rand(20, 120);
-      this.sound.boing();
-      this.particles.sparkle(1500, 540, 5);
+      let spot = null;
+      for (let i = 0; i < 30; i++) {
+        const p = this.room.randomFloorPoint(45);
+        if (dist(p.x, p.y, 1535, 585) > 380 && this.room.isFree(p.x, p.y, 45, { solidTable: true })) {
+          spot = p;
+          break;
+        }
+      }
+      if (!spot) spot = this.room.randomFloorPoint(45);
+      const t = this.dirt.spawn(kind, 1505, 545, {});
+      t.scale = 0.25; // grows as it pops out
+      this.dirt.toss(t, spot.x, spot.y);
+      this.sound.pop();
+      this.sound.whoosh();
+      this.particles.sparkle(1520, 530, 6);
       return;
     }
     if (hit === 'couch') {
@@ -425,6 +435,16 @@ export class Game {
       if (!this.actions.busy && this.robot.state === 'clean' && !this.robot.stayDocked &&
           this.dirt.items.some((d) => d.type === 'sock')) {
         this.actions.triggerByName('sockGrab');
+      }
+    }
+
+    // stray toys get tidied back into the toybox by the arm too
+    this.toyTidyT = (this.toyTidyT ?? 8) - dt;
+    if (this.toyTidyT <= 0) {
+      this.toyTidyT = 9;
+      if (!this.actions.busy && this.robot.state === 'clean' && !this.robot.stayDocked &&
+          this.dirt.items.some((d) => (d.type === 'toy_ball' || d.type === 'toy_block') && !d.toss && !d.fading)) {
+        this.actions.triggerByName('tidyToy');
       }
     }
 

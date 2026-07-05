@@ -562,13 +562,18 @@ function drawSockShape(ctx, g, tint) {
 }
 
 // ------------------------------------------- tidy a toy back into the toybox
+function isTidyableToy(d) {
+  return (d.type === 'toy_ball' || d.type === 'toy_block') &&
+    !d.toss && !d.fading && Math.abs(d.vx) < 40 && Math.abs(d.vy) < 40;
+}
+
 const TidyToy = {
   name: 'tidyToy',
   weight: 7,
   maxDur: 30,
-  canRun: (g) => g.dirt.items.some((d) => (d.type === 'toy_ball' || d.type === 'toy_block') && Math.abs(d.vx) < 40),
+  canRun: (g) => g.dirt.items.some(isTidyableToy),
   start(g) {
-    const toy = g.dirt.items.find((d) => (d.type === 'toy_ball' || d.type === 'toy_block') && Math.abs(d.vx) < 40);
+    const toy = g.dirt.items.find(isTidyableToy);
     if (!toy) {
       this.finished = true;
       return;

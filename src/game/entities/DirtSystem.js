@@ -108,6 +108,27 @@ export class DirtSystem {
       d.age += dt;
       d.wobble += dt;
       d.scale = lerp(d.scale, d.targetScale, 1 - Math.exp(-10 * dt));
+      // ballistic toss (toys launched from the toybox)
+      if (d.toss) {
+        const ts = d.toss;
+        ts.t += dt / ts.dur;
+        const k = Math.min(1, ts.t);
+        d.x = lerp(ts.fromX, ts.toX, k);
+        d.y = lerp(ts.fromY, ts.toY, k);
+        d.drop = Math.sin(Math.PI * k) * ts.peak + 0.01;
+        d.rot += dt * 9;
+        if (ts.t >= 1) {
+          d.toss = null;
+          d.drop = 0;
+          this.game.particles.dustPuff(d.x, d.y, 5);
+          this.game.sound.boing();
+          if (d.type === 'toy_ball') {
+            d.vx = rand(-70, 70);
+            d.vy = rand(-70, 70);
+          }
+        }
+        continue;
+      }
       // drop-in animation
       if (d.drop > 0) {
         d.dropV += 900 * dt;
