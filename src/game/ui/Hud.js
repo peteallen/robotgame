@@ -91,8 +91,8 @@ export class Hud {
       pctx.restore();
     });
 
-    // ---- bin pill
-    this.drawPill(ctx, 22, 90, 150, (pctx) => {
+    // ---- bin pill (dust bin + mop-pad dirtiness gauge)
+    this.drawPill(ctx, 22, 90, 245, (pctx) => {
       const fill = r.bin;
       const full = fill > 0.85;
       const pulse = full ? 1 + 0.06 * Math.sin(this.t * 9) : 1;
@@ -134,6 +134,50 @@ export class Hud {
         pctx.fill();
       }
       pctx.globalAlpha = 1;
+
+      // ---- mop-pad dirtiness gauge (right portion)
+      const dirt = g.mopDirt;
+      const grubby = dirt >= 0.85;
+      pctx.save();
+      // ghost the whole gauge when no pads are installed
+      if (!r.mopMode) pctx.globalAlpha = 0.25;
+      // mini mop icon, just left of the bar (past the dot meter)
+      const mopImg = g.assets.get('icon_mop');
+      if (mopImg) {
+        pctx.drawImage(mopImg, 152 - 11, 34 - 11, 22, 22);
+      } else {
+        // procedural blue droplet
+        pctx.fillStyle = '#4aa3e8';
+        pctx.beginPath();
+        pctx.moveTo(152, 34 - 9);
+        pctx.quadraticCurveTo(152 + 7, 34, 152, 34 + 5);
+        pctx.quadraticCurveTo(152 - 7, 34, 152, 34 - 9);
+        pctx.fill();
+      }
+      // pad bar: clean blue-white base, grubby brown fills left-to-right
+      const barX = 162, barY = 25, barW = 64, barH = 18, barR = 9;
+      const scale = grubby ? 1 + 0.06 * Math.sin(this.t * 9) : 1;
+      pctx.save();
+      pctx.translate(barX + barW / 2, barY + barH / 2);
+      pctx.scale(scale, scale);
+      pctx.translate(-(barX + barW / 2), -(barY + barH / 2));
+      pctx.fillStyle = '#dfeefc';
+      roundRect(pctx, barX, barY, barW, barH, barR);
+      pctx.fill();
+      // grubby fill, clipped to the rounded pad shape
+      pctx.save();
+      roundRect(pctx, barX, barY, barW, barH, barR);
+      pctx.clip();
+      // toward '#c0392b' urgency when very dirty (kept gentle)
+      pctx.fillStyle = grubby ? blendHex('#8a6a48', '#c0392b', 0.5) : '#8a6a48';
+      pctx.fillRect(barX, barY, barW * clamp(dirt, 0, 1), barH);
+      pctx.restore();
+      pctx.strokeStyle = '#9cc8ee';
+      pctx.lineWidth = 2;
+      roundRect(pctx, barX, barY, barW, barH, barR);
+      pctx.stroke();
+      pctx.restore();
+      pctx.restore();
     });
 
     // ---- star meter pill (stacked below)
@@ -294,6 +338,16 @@ function drawModeIcon(ctx, game, mode, cx, cy, size, active) {
     roundRect(ctx, cx - size * 0.32, cy + size * 0.3, size * 0.64, size * 0.14, size * 0.07);
     ctx.fill();
   }
+}
+
+// blend two #rrggbb colors, t=0 -> a, t=1 -> b
+function blendHex(a, b, t) {
+  const pa = parseInt(a.slice(1), 16);
+  const pb = parseInt(b.slice(1), 16);
+  const r = Math.round(lerp((pa >> 16) & 255, (pb >> 16) & 255, t));
+  const g = Math.round(lerp((pa >> 8) & 255, (pb >> 8) & 255, t));
+  const bl = Math.round(lerp(pa & 255, pb & 255, t));
+  return 'rgb(' + r + ', ' + g + ', ' + bl + ')';
 }
 
 function boltPath(ctx, cx, cy, s) {

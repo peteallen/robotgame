@@ -39,6 +39,12 @@ browser. Sound starts after the first tap (browser autoplay rules).
   empty — he waits at the dock), the clean tank runs dry and the dirty tank
   fills (can't mop — the mess stays). Bouncing red ! bubbles show exactly what
   to tap; one tap services it ("Thank you!") and he gets right back to it.
+- **Mode picker (left HUD)**: vacuum / mop / vacuum+mop. Switching sends him to
+  the dock — "Going to install the mop pads" or "Removing the mop pads" — with
+  an undercarriage-cam cutaway showing pads clicking on/off. Dirty pads get
+  washed (sudsy cutaway, water tanks exchange) before removal, and every ~1
+  min of mopping he announces "Going to wash the mop pads" and heads home.
+  Mop-only mode ignores crumbs entirely — vacuuming is not its job.
 - **Tap the dock base** → he comes home, backs in, and stays parked (naps with
   little z's) until you tap him awake.
 - He talks — real voice lines generated with OpenRouter (`openai/gpt-audio`):

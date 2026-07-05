@@ -151,7 +151,7 @@ export class Dog {
         this.x = damp(this.x, r.x, 18, dt);
         this.y = damp(this.y, r.y - 26, 18, dt);
         this.rideT -= dt;
-        if (this.rideT <= 0 || ['align', 'empty', 'charge', 'docked'].includes(r.state)) {
+        if (this.rideT <= 0 || ['align', 'empty', 'charge', 'docked', 'washpads'].includes(r.state)) {
           this.hopOff();
         }
         break;
@@ -220,7 +220,7 @@ export class Dog {
   tryRide() {
     const r = this.game.robot;
     if (this.state === 'ride' || this.pooping()) return false;
-    if (['align', 'empty', 'charge', 'docked'].includes(r.state)) return false;
+    if (['align', 'empty', 'charge', 'docked', 'washpads'].includes(r.state)) return false;
     this.state = 'ride';
     this.rideT = rand(10, 16);
     this.stateT = 0;

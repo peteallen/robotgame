@@ -302,7 +302,7 @@ export class Robot {
     if (this.blink > 0) this.blink -= dt;
 
     // battery drain while out and about
-    const active = !['docked', 'charge', 'empty'].includes(this.state);
+    const active = !['docked', 'charge', 'empty', 'washpads'].includes(this.state);
     if (active && !g.freezeBattery) {
       this.battery = clamp(this.battery - dt / 150, 0, 1);
       if (this.battery <= 0.16 && !this.controlled && !['godock', 'align'].includes(this.state)) {
@@ -354,7 +354,7 @@ export class Robot {
         g.sound.setHumIntensity(clamp(Math.abs(this.speed) / 170, 0.15, 1.6));
       } else {
         g.sound.setHumIntensity(0.05);
-        if (['docked', 'charge', 'empty'].includes(this.state)) g.sound.stopHum();
+        if (['docked', 'charge', 'empty', 'washpads'].includes(this.state)) g.sound.stopHum();
       }
     }
 
@@ -424,15 +424,8 @@ export class Robot {
         if (this.waitingForBag) {
           if (!g.dock.needsBag()) {
             this.waitingForBag = false;
-            if (this.bin > 0.4) {
-              this.state = 'empty';
-              this.stateT = 0;
-              g.say('emptying');
-              g.sound.emptyRoar(3.0);
-              this.setExpr('effort', 3);
-            } else {
-              this.dockedUndockT = 1;
-            }
+            // 'empty' is still at the front of the plan — resume it
+            this.nextDockTask();
           } else {
             this.announceT -= dt;
             if (this.announceT <= 0) {
@@ -550,18 +543,24 @@ export class Robot {
         if (this.stateT > 3.0) {
           this.bin = 0;
           g.sound.dockChime();
-          g.particles.sparkle(g.dock.x, g.dock.y - 120, 12);
-          if (this.battery < 0.95) {
-            this.state = 'charge';
-            this.stateT = 0;
-            this.chargeBlipLevel = Math.floor(this.battery * 5);
-          } else {
-            this.state = 'docked';
-            this.dockedUndockT = 1.2;
-            this.setExpr('happy', 1.5);
-          }
+          g.particles.sparkle(g.dock.x, g.dock.spriteTop + 60, 12);
+          this.nextDockTask();
         } else {
           this.bin = Math.max(0, this.bin - dt / 2.8);
+        }
+        break;
+      }
+      case 'washpads': {
+        // pads scrubbing at the dock (undercarriage cam is showing it all)
+        this.targetSpeed = 0;
+        g.dock.cleanWater = clamp(g.dock.cleanWater - dt * (0.35 / 4.6), 0, 1);
+        g.dock.dirtyWater = clamp(g.dock.dirtyWater + dt * (0.35 / 4.6), 0, 1);
+        if (g.cutaway.done) {
+          g.mopDirt = 0;
+          g.cutaway.dismiss();
+          g.sound.ackBeep();
+          g.particles.sparkle(this.x, this.y - 40, 8);
+          this.nextDockTask();
         }
         break;
       }
@@ -584,9 +583,7 @@ export class Robot {
           g.say('charge_done');
           g.particles.burst(this.x, this.y - 40, 'star', 14, { colors: ['#7ef29d', '#c5ffd9', '#fff'], speedMin: 60, speedMax: 200, lifeMin: 0.5, lifeMax: 1 });
           this.setExpr('happy', 2);
-          this.state = 'docked';
-          this.stateT = 0;
-          this.dockedUndockT = 1.4;
+          this.nextDockTask();
         }
         break;
       }
@@ -747,34 +744,67 @@ export class Robot {
     g.particles.sparkle(this.x, this.y - 30, 6);
     // backed in: face out into the room, rear (dust port) against the tower
     this.heading = Math.PI / 2;
-    const wantsEmpty = this.bin > 0.4 || this.dockReason === 'bin';
-    if (wantsEmpty && g.dock.needsBag()) {
-      // can't auto-empty into a full bag — wait for a human
-      this.state = 'docked';
-      this.stateT = 0;
-      this.waitingForBag = true;
-      this.announceT = 24;
-      this.setExpr('full', 4);
-      g.say('bag_full');
-      g.sound.errorBuzz();
-      return;
+    // every return services whatever's equipped, in the order the real one
+    // does it: empty the bin, wash the pads, then charge
+    this.dockPlan = [];
+    if (this.bin > 0.12 || this.dockReason === 'bin') this.dockPlan.push('empty');
+    if (this.mopMode && g.mopDirt > 0.1) this.dockPlan.push('wash');
+    if (this.battery < 0.95) this.dockPlan.push('charge');
+    this.nextDockTask();
+  }
+
+  // run the next service in the dock plan (or settle in)
+  nextDockTask() {
+    const g = this.game;
+    while (this.dockPlan && this.dockPlan.length) {
+      const task = this.dockPlan.shift();
+      if (task === 'empty') {
+        if (g.dock.needsBag()) {
+          // can't auto-empty into a full bag — wait for a human, then retry
+          this.dockPlan.unshift('empty');
+          this.state = 'docked';
+          this.stateT = 0;
+          this.waitingForBag = true;
+          this.announceT = 24;
+          this.setExpr('full', 4);
+          g.say('bag_full');
+          g.sound.errorBuzz();
+          return;
+        }
+        this.state = 'empty';
+        this.stateT = 0;
+        g.say('emptying');
+        g.sound.emptyRoar(3.0);
+        this.setExpr('effort', 3);
+        return;
+      }
+      if (task === 'wash') {
+        if (!g.dock.canMop()) {
+          // no water service — complain, pads stay dirty, carry on
+          g.say(g.dock.needsClean() ? 'clean_empty' : 'dirty_full');
+          g.sound.errorBuzz();
+          g.mopComplained = true;
+          continue;
+        }
+        this.state = 'washpads';
+        this.stateT = 0;
+        g.cutaway.show('wash');
+        g.say('washing');
+        this.setExpr('effort', 3);
+        return;
+      }
+      if (task === 'charge') {
+        if (this.battery >= 0.95) continue;
+        this.state = 'charge';
+        this.stateT = 0;
+        this.chargeBlipLevel = Math.floor(this.battery * 5);
+        return;
+      }
     }
-    if (wantsEmpty) {
-      this.state = 'empty';
-      this.stateT = 0;
-      g.say('emptying');
-      g.sound.emptyRoar(3.0);
-      this.setExpr('effort', 3);
-    } else if (this.battery < 0.95) {
-      this.state = 'charge';
-      this.stateT = 0;
-      this.chargeBlipLevel = Math.floor(this.battery * 5);
-    } else {
-      this.state = 'docked';
-      this.stateT = 0;
-      this.dockedUndockT = 1.5;
-      this.setExpr('happy', 1.4);
-    }
+    this.state = 'docked';
+    this.stateT = 0;
+    this.dockedUndockT = 1.5;
+    this.setExpr('happy', 1.4);
   }
 
   // ---- drawing ------------------------------------------------------------
@@ -829,7 +859,7 @@ export class Robot {
   currentExpr() {
     if (this.face && this.game.time < this.face.until) return this.face.expr;
     if (this.state === 'charge') return 'charge';
-    if (this.state === 'empty') return 'effort';
+    if (this.state === 'empty' || this.state === 'washpads') return 'effort';
     if (this.state === 'docked' && this.stayDocked && this.stateT > 3.5) return 'sleepy';
     if (this.state === 'docked') return 'happy';
     if (this.battery < 0.2) return 'sleepy';
