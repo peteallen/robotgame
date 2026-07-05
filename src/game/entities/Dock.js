@@ -7,23 +7,26 @@ import { roundRect } from '../world/Room.js';
 // Sprite-relative regions (fractions of the drawn sprite box) — calibrated by
 // measuring public/assets/sprites/dock.png. Re-measure after regenerating art.
 const REGIONS = {
-  bag: { x0: 0.21, y0: 0.235, x1: 0.79, y1: 0.405 },
-  clean: { x0: 0.125, y0: 0.545, x1: 0.465, y1: 0.845 },
-  dirty: { x0: 0.535, y0: 0.545, x1: 0.875, y1: 0.845 },
-  led: { x: 0.49, y: 0.145 },
+  bag: { x0: 0.21, y0: 0.145, x1: 0.79, y1: 0.365 },
+  clean: { x0: 0.185, y0: 0.49, x1: 0.485, y1: 0.71 },
+  dirty: { x0: 0.515, y0: 0.49, x1: 0.815, y1: 0.71 },
+  led: { x: 0.49, y: 0.435 },
+  padCenterY: 0.88, // robot parks centered here
+  towerBottomY: 0.76,
 };
 
 export class Dock {
   constructor(game) {
     this.game = game;
     this.x = 1330;
-    this.y = 262; // tower floor contact
-    this.parkY = 295; // robot center when docked
-    this.approach = { x: 1330, y: 470 };
-    this.footprint = { x: 1245, y: 180, w: 170, h: 128 };
-    this.baseline = 268;
-    this.drawW = 276; // matches sprite aspect (447x560)
-    this.drawH = 345;
+    this.parkY = 300; // robot center when docked — middle of the big pad
+    this.drawW = 288; // matches sprite aspect (448x560)
+    this.drawH = 360;
+    this.spriteTop = this.parkY - Math.round(REGIONS.padCenterY * this.drawH);
+    this.y = this.spriteTop + REGIONS.towerBottomY * this.drawH; // tower floor contact
+    this.approach = { x: 1330, y: 480 };
+    this.footprint = { x: 1215, y: 175, w: 230, h: 178 };
+    this.baseline = this.y + 2;
 
     // the consumables — this is the maintenance game
     this.bagFill = 0.3;
@@ -41,7 +44,7 @@ export class Dock {
 
   computeRects() {
     const left = this.x - this.drawW / 2;
-    const top = this.y + 70 - this.drawH;
+    const top = this.spriteTop;
     const rect = (r) => ({
       x: left + r.x0 * this.drawW,
       y: top + r.y0 * this.drawH,
@@ -176,16 +179,16 @@ export class Dock {
     const img = assets.get('dock');
     const t = this.wobble;
     ctx.save();
-    ctx.translate(this.x, this.y);
+    ctx.translate(this.x, 0);
 
-    // charging pad shadow on floor
-    ctx.fillStyle = 'rgba(90, 50, 30, 0.18)';
+    // soft shadow under the pad
+    ctx.fillStyle = 'rgba(90, 50, 30, 0.16)';
     ctx.beginPath();
-    ctx.ellipse(0, 62, 112, 38, 0, 0, TAU);
+    ctx.ellipse(0, this.parkY + 34, 140, 34, 0, 0, TAU);
     ctx.fill();
 
     if (img) {
-      ctx.drawImage(img, -this.drawW / 2, 70 - this.drawH, this.drawW, this.drawH);
+      ctx.drawImage(img, -this.drawW / 2, this.spriteTop, this.drawW, this.drawH);
     } else {
       this.drawFallbackTower(ctx);
     }

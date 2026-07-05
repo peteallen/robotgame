@@ -1,6 +1,6 @@
 // Every tap-the-robot surprise lives here. Each action takes control of the
 // robot, does something delightful, then hands control back.
-import { TAU, rand, pick, chance, clamp, lerp, dist, angleTo, easeOutCubic, easeInOutSine } from '../core/math.js';
+import { TAU, rand, pick, chance, clamp, lerp, dist, angleTo, damp, easeOutCubic, easeInOutSine } from '../core/math.js';
 import { roundRect } from '../world/Room.js';
 
 export function registerDefaultActions(reg) {
@@ -833,14 +833,52 @@ const MopMode = {
   name: 'mopMode',
   weight: 0,
   canRun: () => false,
-  maxDur: 55,
+  maxDur: 120,
   start(g) {
     const r = g.robot;
-    this.state = { phase: 'notice', t: 0, sprayT: 0, squeegeeT: 0 };
+    this.state = { phase: 'notice', t: 0, sprayT: 0, squeegeeT: 0, dockPhase: null, beepT: 0, success: false };
     r.targetSpeed = 0;
+    r.actionDockOk = true;
     r.setExpr('dizzy', 2.2);
     g.sound.alarm();
     g.shake(3);
+  },
+  // shared back-in docking maneuver; returns true when parked
+  dockManeuver(g, st, dt) {
+    const r = g.robot;
+    switch (st.dockPhase) {
+      case 'go': {
+        if (r.driveTo(g.dock.approach.x, g.dock.approach.y, 195, 28, { ignoreDock: true })) {
+          st.dockPhase = 'turn';
+        }
+        break;
+      }
+      case 'turn': {
+        if (r.faceAngle(Math.PI / 2, 3)) st.dockPhase = 'back';
+        break;
+      }
+      case 'back': {
+        r.heading = Math.PI / 2;
+        r.targetSpeed = -62;
+        r.x = damp(r.x, g.dock.x, 5, dt);
+        st.beepT -= dt;
+        if (st.beepT <= 0) {
+          st.beepT = 0.72;
+          g.sound.backupBeep();
+        }
+        if (r.y <= g.dock.parkY) {
+          r.y = g.dock.parkY;
+          r.x = g.dock.x;
+          r.targetSpeed = 0;
+          r.speed = 0;
+          st.dockPhase = null;
+          g.sound.dockChime();
+          return true;
+        }
+        break;
+      }
+    }
+    return false;
   },
   update(g, dt) {
     const r = g.robot;
@@ -851,30 +889,65 @@ const MopMode = {
         // the horrified realization
         r.targetSpeed = 0;
         r.spinExtra = Math.sin(st.t * 24) * 0.05;
-        if (st.t > 1.6) {
-          st.phase = 'transform';
-          st.t = 0;
+        if (st.t > 0.5 && !st.saidUhOh) {
+          st.saidUhOh = true;
+          g.say('uh_oh', { force: true });
+        }
+        if (st.t > 1.7) {
           r.spinExtra = 0;
-          g.sound.mopJingle();
+          st.t = 0;
+          if (!g.dock.canMop()) {
+            // no water service — complain and leave the mess for the human
+            g.say(g.dock.needsClean() ? 'clean_empty' : 'dirty_full', { force: true });
+            g.sound.errorBuzz();
+            g.mopComplained = true;
+            r.setExpr('sleepy', 2.5);
+            st.phase = 'giveup';
+          } else {
+            g.say('go_mop_install');
+            r.setExpr('determined', 4);
+            st.phase = 'toDock';
+            st.dockPhase = 'go';
+          }
         }
         break;
       }
-      case 'transform': {
-        // vacuum -> mop: a quick flourish and the pad deploys
+      case 'giveup': {
         r.targetSpeed = 0;
-        r.spinExtra += dt * 7.5;
-        if (st.t > 0.85) {
-          r.spinExtra = 0;
+        if (st.t > 1.4) this.finished = true;
+        break;
+      }
+      case 'toDock': {
+        if (this.dockManeuver(g, st, dt)) {
+          st.phase = 'install';
+          st.t = 0;
+        }
+        break;
+      }
+      case 'install': {
+        // pads clip on at the dock
+        r.targetSpeed = 0;
+        if (st.t > 0.4 && !st.clunked) {
+          st.clunked = true;
+          g.sound.clunk();
+        }
+        if (st.t > 0.9 && !r.mopMode) {
           r.mopMode = true;
+          g.sound.clunk();
+          g.particles.sparkle(r.x, r.y + 30, 6);
+        }
+        if (st.t > 1.6) {
+          g.say('mop_installed');
           r.trailMode = 'mop';
+          st.phase = 'leaveDock';
+          st.t = 0;
+        }
+        break;
+      }
+      case 'leaveDock': {
+        if (r.driveTo(g.dock.approach.x, g.dock.approach.y + 30, 130, 26, { ignoreDock: true })) {
           st.phase = 'mop';
           st.t = 0;
-          r.setExpr('determined', 3);
-          g.sound.happyBeeps(2);
-          g.particles.burst(r.x, r.y - 30, 'dot', 12, {
-            colors: ['#8fd7ff', '#d6f4ff', '#ffffff'],
-            speedMin: 60, speedMax: 180, lifeMin: 0.4, lifeMax: 0.8, gravity: 240,
-          });
         }
         break;
       }
@@ -883,20 +956,70 @@ const MopMode = {
         const smear = g.smears.nearest(r.x, r.y);
         const target = smear || pile;
         if (!target) {
-          st.phase = 'victory';
+          st.phase = 'toWash';
           st.t = 0;
-          r.targetSpeed = 0;
-          g.sound.tada();
-          g.particles.confettiBurst(r.x, r.y - 30, 26);
+          st.dockPhase = 'go';
+          g.say('go_mop_wash');
+          g.sound.happyBeeps(2);
           break;
         }
         r.driveTo(target.x, target.y, 165, 26);
         break;
       }
-      case 'victory': {
+      case 'toWash': {
+        if (this.dockManeuver(g, st, dt)) {
+          st.phase = 'wash';
+          st.t = 0;
+          g.say('washing');
+        }
+        break;
+      }
+      case 'wash': {
+        // scrub scrub — clean water in, dirty water out, gauges move
         r.targetSpeed = 0;
-        r.spinExtra += dt * 6 * Math.max(0, 1 - st.t);
-        if (st.t > 1.3) this.finished = true;
+        r.spinExtra = Math.sin(st.t * 10) * 0.04;
+        g.dock.cleanWater = clamp(g.dock.cleanWater - dt * (0.35 / 3), 0, 1);
+        g.dock.dirtyWater = clamp(g.dock.dirtyWater + dt * (0.35 / 3), 0, 1);
+        st.beepT -= dt;
+        if (st.beepT <= 0) {
+          st.beepT = 0.85;
+          g.sound.washSwish();
+        }
+        if (Math.random() < 0.4) {
+          g.particles.add({
+            x: r.x + rand(-40, 40), y: r.y + rand(10, 40),
+            kind: 'bubble', size: rand(4, 9), life: rand(0.4, 0.8),
+            vy: rand(-35, -10), vx: rand(-12, 12),
+          });
+        }
+        if (st.t > 3.0) {
+          st.phase = 'uninstall';
+          st.t = 0;
+          r.spinExtra = 0;
+        }
+        break;
+      }
+      case 'uninstall': {
+        r.targetSpeed = 0;
+        if (st.t > 0.35 && r.mopMode) {
+          r.mopMode = false;
+          if (r.trailMode === 'mop') r.trailMode = null;
+          g.sound.clunk();
+        }
+        if (st.t > 0.9) {
+          st.phase = 'leaveDock2';
+          st.t = 0;
+          st.success = true;
+          g.say('mop_done');
+          g.sound.tada();
+          g.particles.confettiBurst(r.x, r.y - 40, 24);
+        }
+        break;
+      }
+      case 'leaveDock2': {
+        if (r.driveTo(g.dock.approach.x, g.dock.approach.y + 20, 130, 26, { ignoreDock: true })) {
+          this.finished = true;
+        }
         break;
       }
     }
@@ -949,10 +1072,13 @@ const MopMode = {
     const r = g.robot;
     r.mopMode = false;
     if (r.trailMode === 'mop') r.trailMode = null;
+    r.actionDockOk = false;
     r.spinExtra = 0;
-    r.setExpr('love', 2);
-    g.sound.fanfare();
-    g.particles.sparkle(r.x, r.y - 40, 14);
+    if (this.state?.success) {
+      r.setExpr('love', 2);
+      g.sound.fanfare();
+      g.particles.sparkle(r.x, r.y - 40, 14);
+    }
   },
 };
 

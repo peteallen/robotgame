@@ -1,6 +1,7 @@
 // Game: owns the world, update/draw pipeline, y-sorted rendering and input.
 import { TAU, clamp, lerp, rand, pick, chance, dist, damp, angleTo } from './core/math.js';
 import { SoundEngine } from './core/SoundEngine.js';
+import { Voice } from './core/Voice.js';
 import { Particles } from './fx/Particles.js';
 import { Smears } from './fx/Smears.js';
 import { Room, WORLD_W, WORLD_H, roundRect } from './world/Room.js';
@@ -19,6 +20,7 @@ export class Game {
     this.ctx = canvas.getContext('2d');
     this.assets = assets;
     this.sound = new SoundEngine();
+    this.voice = new Voice(this.sound);
     this.particles = new Particles();
     this.smears = new Smears(this);
     this.room = new Room(this);
@@ -102,6 +104,17 @@ export class Game {
 
   shake(amt) {
     this.shakeAmt = Math.max(this.shakeAmt, amt);
+  }
+
+  say(name, opts) {
+    this.voice.say(name, opts);
+  }
+
+  // player just serviced a dock tank
+  onDockServiced() {
+    this.mopComplained = false;
+    this.sound.happyBeeps(3);
+    this.particles.sparkle(this.dock.x, this.dock.y - 200, 8);
   }
 
   // is a potty disaster anywhere in progress?
@@ -335,8 +348,20 @@ export class Game {
       this.dog.onTap();
       return;
     }
-    // 5. the dock — summon the robot home
+    // 5. the dock — service a tank, or summon the robot home
     if (this.dock.contains(x, y)) {
+      const zone = this.dock.tapZone(x, y);
+      if (zone) {
+        if (this.dock.service(zone)) {
+          this.say('thank_you', { force: true });
+          this.onDockServiced();
+        } else {
+          // nothing to service here — friendly blip
+          this.sound.pop();
+          this.particles.sparkle(x, y, 3);
+        }
+        return;
+      }
       this.dock.beacon = 1.2;
       this.sound.ackBeep();
       this.robot.summon();
@@ -506,13 +531,31 @@ export class Game {
         }
       }
     }
-    // 2. the awful realization → forced mop mode (also mops leftovers)
+    // 2. the awful realization → forced mop mode (also mops leftovers).
+    // If the dock can't support mopping, the robot complains ONCE and the
+    // mess waits until a human services the tanks.
     if (this.pendingMop || (this.smears.count > 0 && !r0.mopMode && r0.smearT <= 0)) {
       const dockStates = ['align', 'empty', 'charge', 'docked'];
-      if (!dockStates.includes(r0.state) && this.actions.current?.name !== 'mopMode') {
+      const allowed = this.dock.canMop() || !this.mopComplained;
+      if (allowed && !dockStates.includes(r0.state) && this.actions.current?.name !== 'mopMode') {
         this.pendingMop = false;
         this.actions.force('mopMode');
+      } else if (!allowed) {
+        this.pendingMop = false;
       }
+    }
+    // gentle reminder while anything on the dock needs a human
+    if (this.dock.anyAlert()) {
+      this.alertRemindT = (this.alertRemindT ?? 8) - dt;
+      if (this.alertRemindT <= 0) {
+        this.alertRemindT = 34;
+        this.dock.beacon = 1.2;
+        if (this.dock.needsBag()) this.say('bag_full');
+        else if (this.dock.needsClean()) this.say('clean_empty');
+        else if (this.dock.needsDirty()) this.say('dirty_full');
+      }
+    } else {
+      this.alertRemindT = 8;
     }
     // 3. fate: a fresh pile quietly bends the robot's cleaning path toward it
     this.fateT = (this.fateT ?? 3) - dt;

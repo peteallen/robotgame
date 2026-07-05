@@ -415,6 +415,29 @@ export class Robot {
     switch (this.state) {
       case 'docked': {
         this.targetSpeed = 0;
+        // bin full + bag full: stuck until a human empties the bag
+        if (this.waitingForBag) {
+          if (!g.dock.needsBag()) {
+            this.waitingForBag = false;
+            if (this.bin > 0.4) {
+              this.state = 'empty';
+              this.stateT = 0;
+              g.say('emptying');
+              g.sound.emptyRoar(3.0);
+              this.setExpr('effort', 3);
+            } else {
+              this.dockedUndockT = 1;
+            }
+          } else {
+            this.announceT -= dt;
+            if (this.announceT <= 0) {
+              this.announceT = 26;
+              g.say('bag_full');
+              g.sound.errorBuzz();
+            }
+          }
+          break;
+        }
         if (this.stayDocked) {
           // parked on purpose — settle in for a nap until tapped awake
           if (this.stateT > 3.5) {
@@ -432,6 +455,7 @@ export class Robot {
           this.state = 'leaving';
           this.stateT = 0;
           g.sound.undockChime();
+          g.say('start_clean');
         }
         break;
       }
@@ -516,9 +540,10 @@ export class Robot {
         this.emptyShake = 0.1;
         g.dock.pullDust(this);
         g.shake(2);
+        // dust streams into the bag, which visibly fills
+        g.dock.bagFill = clamp(g.dock.bagFill + dt * (0.2 / 3.0), 0, 1);
         if (this.stateT > 3.0) {
           this.bin = 0;
-          g.dock.bagFill = clamp(g.dock.bagFill + 0.14, 0, 1);
           g.sound.dockChime();
           g.particles.sparkle(g.dock.x, g.dock.y - 120, 12);
           if (this.battery < 0.95) {
@@ -551,6 +576,7 @@ export class Robot {
         }
         if (this.battery >= 1) {
           g.sound.fullChargeFanfare();
+          g.say('charge_done');
           g.particles.burst(this.x, this.y - 40, 'star', 14, { colors: ['#7ef29d', '#c5ffd9', '#fff'], speedMin: 60, speedMax: 200, lifeMin: 0.5, lifeMax: 1 });
           this.setExpr('happy', 2);
           this.state = 'docked';
@@ -714,9 +740,22 @@ export class Robot {
     g.particles.sparkle(this.x, this.y - 30, 6);
     // backed in: face out into the room, rear (dust port) against the tower
     this.heading = Math.PI / 2;
-    if (this.bin > 0.4 || this.dockReason === 'bin') {
+    const wantsEmpty = this.bin > 0.4 || this.dockReason === 'bin';
+    if (wantsEmpty && g.dock.needsBag()) {
+      // can't auto-empty into a full bag — wait for a human
+      this.state = 'docked';
+      this.stateT = 0;
+      this.waitingForBag = true;
+      this.announceT = 24;
+      this.setExpr('full', 4);
+      g.say('bag_full');
+      g.sound.errorBuzz();
+      return;
+    }
+    if (wantsEmpty) {
       this.state = 'empty';
       this.stateT = 0;
+      g.say('emptying');
       g.sound.emptyRoar(3.0);
       this.setExpr('effort', 3);
     } else if (this.battery < 0.95) {
