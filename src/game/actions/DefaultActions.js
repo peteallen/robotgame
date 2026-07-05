@@ -21,6 +21,8 @@ export function registerDefaultActions(reg) {
   reg.register(MopMode);
   reg.register(ModeSwitch);
   reg.register(WashTrip);
+  reg.register(Trapped);
+  reg.register(WinParty);
 }
 
 // ---------------------------------------------------------------- spin dance

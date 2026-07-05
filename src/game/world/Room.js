@@ -6,6 +6,10 @@ export const WORLD_W = 1680;
 export const WORLD_H = 1050;
 export const WALL_H = 170; // wall band across the top
 
+// Measured from tv.png; the sprite has transparent side padding outside the painted TV.
+const TV_SPRITE_DRAW = { x: -18, y: -16, w: 36, h: 42 };
+const TV_SCREEN_IN_SPRITE = { x: 132 / 640, y: 32 / 287, w: 376 / 640, h: 217 / 287 };
+
 export class Room {
   constructor(game) {
     this.game = game;
@@ -260,8 +264,10 @@ export class Room {
   drawTV(ctx) {
     const tv = this.tv;
     const sprite = this.game.assets.get('tv');
+    const screen = this.tvScreenRect(sprite);
     if (sprite) {
-      ctx.drawImage(sprite, tv.x - 18, tv.y - 16, tv.w + 36, tv.h + 42);
+      const frame = this.tvFrameRect();
+      ctx.drawImage(sprite, frame.x, frame.y, frame.w, frame.h);
     } else {
       ctx.fillStyle = '#3d3a45';
       roundRect(ctx, tv.x - 10, tv.y - 10, tv.w + 20, tv.h + 20, 12);
@@ -275,7 +281,7 @@ export class Room {
         this.game.assets.get('tv_show3'),
       ].filter(Boolean);
       ctx.save();
-      roundRect(ctx, tv.x, tv.y, tv.w, tv.h, 8);
+      roundRect(ctx, screen.x, screen.y, screen.w, screen.h, screen.r);
       ctx.clip();
       if (frames.length) {
         // a real cartoon: each shot holds ~4s with a slow Ken Burns drift
@@ -284,37 +290,39 @@ export class Room {
         const shotT = (t % SHOT) / SHOT;
         const img = frames[idx];
         const zoom = 1.06 + 0.07 * (idx % 2 === 0 ? shotT : 1 - shotT);
-        const panX = (idx % 2 === 0 ? 1 : -1) * (shotT - 0.5) * 14;
-        const dw = tv.w * zoom;
-        const dh = dw * (img.height / img.width);
-        ctx.drawImage(img, tv.x + (tv.w - dw) / 2 + panX, tv.y + (tv.h - dh) / 2, dw, dh);
+        const coverScale = Math.max(screen.w / img.width, screen.h / img.height) * zoom;
+        const dw = img.width * coverScale;
+        const dh = img.height * coverScale;
+        const maxPanX = Math.max(0, (dw - screen.w) / 2);
+        const panX = clamp((idx % 2 === 0 ? 1 : -1) * (shotT - 0.5) * Math.min(14, maxPanX * 0.7), -maxPanX, maxPanX);
+        ctx.drawImage(img, screen.x + (screen.w - dw) / 2 + panX, screen.y + (screen.h - dh) / 2, dw, dh);
         // channel-flip flash
         const sinceCut = (t % SHOT);
         if (sinceCut < 0.14) {
           ctx.fillStyle = `rgba(255, 255, 255, ${0.85 * (1 - sinceCut / 0.14)})`;
-          ctx.fillRect(tv.x, tv.y, tv.w, tv.h);
+          ctx.fillRect(screen.x, screen.y, screen.w, screen.h);
         }
         // faint scanlines for TV feel
         ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
-        for (let y = tv.y + 1; y < tv.y + tv.h; y += 3) {
-          ctx.fillRect(tv.x, y, tv.w, 1);
+        for (let y = screen.y + 1; y < screen.y + screen.h; y += 3) {
+          ctx.fillRect(screen.x, y, screen.w, 1);
         }
         // soft screen sheen
-        const sheen = ctx.createLinearGradient(tv.x, tv.y, tv.x + tv.w * 0.6, tv.y + tv.h);
+        const sheen = ctx.createLinearGradient(screen.x, screen.y, screen.x + screen.w * 0.6, screen.y + screen.h);
         sheen.addColorStop(0, 'rgba(255,255,255,0.10)');
         sheen.addColorStop(0.4, 'rgba(255,255,255,0)');
         ctx.fillStyle = sheen;
-        ctx.fillRect(tv.x, tv.y, tv.w, tv.h);
+        ctx.fillRect(screen.x, screen.y, screen.w, screen.h);
       } else {
         // fallback: colorful bouncing shapes
-        const g = ctx.createLinearGradient(tv.x, tv.y, tv.x + tv.w, tv.y + tv.h);
+        const g = ctx.createLinearGradient(screen.x, screen.y, screen.x + screen.w, screen.y + screen.h);
         g.addColorStop(0, `hsl(${(t * 40) % 360}, 80%, 72%)`);
         g.addColorStop(1, `hsl(${(t * 40 + 120) % 360}, 80%, 78%)`);
         ctx.fillStyle = g;
-        ctx.fillRect(tv.x, tv.y, tv.w, tv.h);
+        ctx.fillRect(screen.x, screen.y, screen.w, screen.h);
         for (let i = 0; i < 4; i++) {
-          const bx = tv.x + tv.w * (0.2 + 0.2 * i) + Math.sin(t * 2.2 + i * 1.9) * 24;
-          const by = tv.y + tv.h * 0.5 + Math.cos(t * 3 + i * 2.3) * 26;
+          const bx = screen.x + screen.w * (0.2 + 0.2 * i) + Math.sin(t * 2.2 + i * 1.9) * 24;
+          const by = screen.y + screen.h * 0.5 + Math.cos(t * 3 + i * 2.3) * 26;
           ctx.fillStyle = `hsla(${(i * 90 + t * 90) % 360}, 90%, 55%, 0.9)`;
           ctx.beginPath();
           if (i % 2) ctx.arc(bx, by, 16 + Math.sin(t * 4 + i) * 5, 0, TAU);
@@ -325,23 +333,46 @@ export class Room {
       ctx.restore();
       // glow spilling onto the wall
       ctx.fillStyle = `rgba(180, 220, 255, ${0.08 + 0.03 * Math.sin(t * 7)})`;
-      roundRect(ctx, tv.x - 16, tv.y - 16, tv.w + 32, tv.h + 60, 16);
+      roundRect(ctx, screen.x - 14, screen.y - 14, screen.w + 28, screen.h + 42, 14);
       ctx.fill();
     } else if (!sprite) {
-      const g = ctx.createLinearGradient(tv.x, tv.y, tv.x, tv.y + tv.h);
+      const g = ctx.createLinearGradient(screen.x, screen.y, screen.x, screen.y + screen.h);
       g.addColorStop(0, '#20242e');
       g.addColorStop(1, '#12141b');
       ctx.fillStyle = g;
-      roundRect(ctx, tv.x, tv.y, tv.w, tv.h, 8);
+      roundRect(ctx, screen.x, screen.y, screen.w, screen.h, screen.r);
       ctx.fill();
       ctx.fillStyle = 'rgba(255,255,255,0.06)';
       ctx.beginPath();
-      ctx.moveTo(tv.x + 20, tv.y + tv.h);
-      ctx.lineTo(tv.x + 90, tv.y);
-      ctx.lineTo(tv.x + 150, tv.y);
-      ctx.lineTo(tv.x + 80, tv.y + tv.h);
+      ctx.moveTo(screen.x + 20, screen.y + screen.h);
+      ctx.lineTo(screen.x + 90, screen.y);
+      ctx.lineTo(screen.x + 150, screen.y);
+      ctx.lineTo(screen.x + 80, screen.y + screen.h);
       ctx.fill();
     }
+  }
+
+  tvFrameRect() {
+    const tv = this.tv;
+    return {
+      x: tv.x + TV_SPRITE_DRAW.x,
+      y: tv.y + TV_SPRITE_DRAW.y,
+      w: tv.w + TV_SPRITE_DRAW.w,
+      h: tv.h + TV_SPRITE_DRAW.h,
+    };
+  }
+
+  tvScreenRect(sprite) {
+    const tv = this.tv;
+    if (!sprite) return { x: tv.x, y: tv.y, w: tv.w, h: tv.h, r: 8 };
+    const frame = this.tvFrameRect();
+    return {
+      x: frame.x + frame.w * TV_SCREEN_IN_SPRITE.x,
+      y: frame.y + frame.h * TV_SCREEN_IN_SPRITE.y,
+      w: frame.w * TV_SCREEN_IN_SPRITE.w,
+      h: frame.h * TV_SCREEN_IN_SPRITE.h,
+      r: 5,
+    };
   }
 
   drawFurniture(ctx, assets, f) {

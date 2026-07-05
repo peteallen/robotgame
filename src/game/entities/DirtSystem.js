@@ -12,9 +12,7 @@ export class DirtSystem {
   constructor(game) {
     this.game = game;
     this.items = [];
-    this.spawnTimer = 2;
     this.tapCycleIdx = 0;
-    this.maxAmbient = 12;
   }
 
   count() {
@@ -42,6 +40,8 @@ export class DirtSystem {
       dropV: 0,
     };
     this.items.push(d);
+    // anything landing on the floor re-arms the all-clean celebration
+    this.game.roomDirty = true;
     return d;
   }
 
@@ -86,11 +86,9 @@ export class DirtSystem {
   }
 
   update(dt) {
-    this.spawnTimer -= dt;
-    if (this.spawnTimer <= 0) {
-      this.spawnTimer = rand(2.6, 5.2);
-      if (this.count() < this.maxAmbient) this.spawnRandom();
-    }
+    // NOTE: no ambient spawning — dirt only appears when the PLAYER makes it
+    // (tapping the floor, shaking the plant, launching toys, dragging socks,
+    // poking the dog...) so a fully-clean room stays clean and earns the party.
     // too many toys on the floor: the oldest one magically "gets put away"
     const toys = this.items.filter((d) => d.type === 'toy_ball' || d.type === 'toy_block');
     if (toys.length > 5) {

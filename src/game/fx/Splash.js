@@ -177,43 +177,39 @@ export class Splash {
       ctx.arc(px, py, 58 + k * 110, 0, TAU);
       ctx.stroke();
     }
-    const pulse = 1 + 0.07 * Math.sin(t * 4.2);
+    // it lands right on the poster robot's body: "press his power button!"
+    const pulse = 1 + 0.08 * Math.sin(t * 4.2);
     ctx.save();
     ctx.translate(px, py + Math.sin(t * 2.6) * 5);
     ctx.scale(pulse, pulse);
-    ctx.fillStyle = 'rgba(255, 252, 245, 0.95)';
+    ctx.fillStyle = 'rgba(255, 252, 245, 0.96)';
     ctx.strokeStyle = 'rgba(90, 60, 20, 0.25)';
-    ctx.lineWidth = 5;
+    ctx.lineWidth = 6;
     ctx.beginPath();
-    ctx.arc(0, 0, 58, 0, TAU);
+    ctx.arc(0, 0, 72, 0, TAU);
     ctx.fill();
     ctx.stroke();
-    // mini robot face
-    const rg = ctx.createRadialGradient(-10, -14, 4, 0, 0, 42);
+    const rg = ctx.createRadialGradient(-12, -16, 5, 0, 0, 54);
     rg.addColorStop(0, '#8ff0e0');
     rg.addColorStop(0.6, '#45cdbb');
     rg.addColorStop(1, '#28a394');
     ctx.fillStyle = rg;
     ctx.beginPath();
-    ctx.arc(0, 0, 42, 0, TAU);
+    ctx.arc(0, 0, 54, 0, TAU);
     ctx.fill();
-    ctx.fillStyle = '#1f2734';
+    // power glyph, glowing
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 9;
+    ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(255, 255, 255, 0.9)';
+    ctx.shadowBlur = 12 + 6 * Math.sin(t * 4.2);
     ctx.beginPath();
-    ctx.arc(0, -2, 21, 0, TAU);
-    ctx.fill();
-    const blink = Math.sin(t * 1.7) > 0.96;
-    ctx.fillStyle = '#a5ecff';
-    ctx.shadowColor = 'rgba(120, 230, 255, 0.9)';
-    ctx.shadowBlur = 8;
-    if (blink) {
-      ctx.fillRect(-14, -5, 9, 3);
-      ctx.fillRect(5, -5, 9, 3);
-    } else {
-      ctx.beginPath();
-      ctx.arc(-9, -3, 4.6, 0, TAU);
-      ctx.arc(9, -3, 4.6, 0, TAU);
-      ctx.fill();
-    }
+    ctx.arc(0, 3, 26, -Math.PI * 0.32, Math.PI * 1.32);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, -26);
+    ctx.lineTo(0, 2);
+    ctx.stroke();
     ctx.shadowBlur = 0;
     ctx.restore();
 

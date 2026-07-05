@@ -54,6 +54,9 @@ export class Robot {
     this.announceT = 0;
     this.actionDockOk = false; // actions may drive onto the dock pad
 
+    // wedged under furniture, crying for a rescue (status light flashes red)
+    this.trapped = false;
+
     // visuals
     this.z = 0;
     this.vz = 0;
@@ -858,6 +861,7 @@ export class Robot {
 
   currentExpr() {
     if (this.face && this.game.time < this.face.until) return this.face.expr;
+    if (this.trapped) return 'dizzy';
     if (this.state === 'charge') return 'charge';
     if (this.state === 'empty' || this.state === 'washpads') return 'effort';
     if (this.state === 'docked' && this.stayDocked && this.stateT > 3.5) return 'sleepy';
@@ -1038,19 +1042,31 @@ export class Robot {
     ctx.beginPath();
     ctx.arc(0, -2, 25, 0, TAU);
     ctx.fill();
+    const trapBlink = Math.sin(this.wobbleT * 8) > 0;
     const ringColor =
-      this.mopMode ? '#48b6ff'
+      this.trapped ? (trapBlink ? '#ff3b30' : '#6b1712')
+      : this.mopMode ? '#48b6ff'
       : this.state === 'charge' ? '#7ef29d'
       : this.bin > 0.88 ? '#ffb42e'
       : this.state === 'action' ? '#ff5d8f'
       : '#4cc9f0';
     ctx.strokeStyle = ringColor;
-    ctx.lineWidth = 3;
-    ctx.globalAlpha = 0.65 + 0.35 * Math.sin(this.wobbleT * 3);
+    ctx.lineWidth = this.trapped ? 5 : 3;
+    ctx.globalAlpha = this.trapped ? (trapBlink ? 1 : 0.4) : 0.65 + 0.35 * Math.sin(this.wobbleT * 3);
     ctx.beginPath();
     ctx.arc(0, -2, 28, 0, TAU);
     ctx.stroke();
     ctx.globalAlpha = 1;
+    if (this.trapped && trapBlink) {
+      // the status LED itself, blazing red so the SOS reads from anywhere
+      ctx.fillStyle = '#ff3b30';
+      ctx.shadowColor = 'rgba(255, 60, 40, 0.95)';
+      ctx.shadowBlur = 16;
+      ctx.beginPath();
+      ctx.arc(0, -20, 5.5, 0, TAU);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
     // spinning lidar glint
     ctx.fillStyle = 'rgba(120, 220, 255, 0.9)';
     ctx.beginPath();
