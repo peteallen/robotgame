@@ -114,7 +114,7 @@ export class Game {
   onDockServiced() {
     this.mopComplained = false;
     this.sound.happyBeeps(3);
-    this.particles.sparkle(this.dock.x, this.dock.y - 200, 8);
+    this.particles.sparkle(this.dock.x, this.dock.spriteTop + 40, 8);
   }
 
   // is a potty disaster anywhere in progress?

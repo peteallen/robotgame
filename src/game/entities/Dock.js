@@ -7,9 +7,9 @@ import { roundRect } from '../world/Room.js';
 // Sprite-relative regions (fractions of the drawn sprite box) — calibrated by
 // measuring public/assets/sprites/dock.png. Re-measure after regenerating art.
 const REGIONS = {
-  bag: { x0: 0.21, y0: 0.145, x1: 0.79, y1: 0.365 },
-  clean: { x0: 0.185, y0: 0.49, x1: 0.485, y1: 0.71 },
-  dirty: { x0: 0.515, y0: 0.49, x1: 0.815, y1: 0.71 },
+  bag: { x0: 0.215, y0: 0.15, x1: 0.785, y1: 0.36 },
+  clean: { x0: 0.2, y0: 0.5, x1: 0.475, y1: 0.7 },
+  dirty: { x0: 0.525, y0: 0.5, x1: 0.8, y1: 0.7 },
   led: { x: 0.49, y: 0.435 },
   padCenterY: 0.88, // robot parks centered here
   towerBottomY: 0.76,
@@ -170,7 +170,7 @@ export class Dock {
   }
 
   contains(x, y) {
-    return x > this.x - 155 && x < this.x + 155 && y > -10 && y < this.y + 115;
+    return x > this.x - 165 && x < this.x + 165 && y > -10 && y < this.parkY + 95;
   }
 
   // ---- drawing ---------------------------------------------------------------
@@ -237,7 +237,7 @@ export class Dock {
         ctx.strokeStyle = `rgba(76, 201, 240, ${0.7 * (1 - rt)})`;
         ctx.lineWidth = 5;
         ctx.beginPath();
-        ctx.ellipse(this.x, this.y + 45, 42 + rt * 95, 17 + rt * 38, 0, 0, TAU);
+        ctx.ellipse(this.x, this.parkY + 14, 46 + rt * 100, 18 + rt * 40, 0, 0, TAU);
         ctx.stroke();
       }
     }
@@ -428,18 +428,18 @@ export class Dock {
   }
 
   drawFallbackTower(ctx) {
-    // simple stand-in if the sprite is missing
-    const w = this.drawW * 0.62;
-    const h = this.drawH * 0.82;
+    // simple stand-in if the sprite is missing (translate is (x, 0))
+    const w = this.drawW * 0.8;
     const tg = ctx.createLinearGradient(-w / 2, 0, w / 2, 0);
     tg.addColorStop(0, '#565b6e');
     tg.addColorStop(0.5, '#6e7488');
     tg.addColorStop(1, '#4c5162');
     ctx.fillStyle = tg;
-    roundRect(ctx, -w / 2, 62 - h, w, h, 24);
+    roundRect(ctx, -w / 2, this.spriteTop, w, this.y - this.spriteTop, 24);
     ctx.fill();
-    ctx.fillStyle = '#3b3f4d';
-    roundRect(ctx, -w / 2 + 16, 40, w - 32, 26, 12);
+    ctx.fillStyle = '#4a4e5c';
+    ctx.beginPath();
+    ctx.ellipse(0, this.parkY + 6, this.drawW * 0.48, 44, 0, 0, TAU);
     ctx.fill();
   }
 }
