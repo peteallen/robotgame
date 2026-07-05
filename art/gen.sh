@@ -1,0 +1,13 @@
+#!/bin/bash
+# Generate one sprite via the openrouter-image skill script.
+# Usage: gen.sh <name> <prompt> [extra args...]
+set -e
+NAME="$1"; shift
+PROMPT="$1"; shift
+OUT="/Users/peteallen/work/robotgame/art/raw/${NAME}.png"
+python3 ~/.claude/skills/openrouter-image/scripts/generate_image.py \
+  "$PROMPT" \
+  --output "$OUT" \
+  -m google/gemini-3.1-flash-image-preview \
+  "$@" > "/Users/peteallen/work/robotgame/art/raw/${NAME}.log" 2>&1 \
+  && echo "OK ${NAME}" || echo "FAIL ${NAME} (see art/raw/${NAME}.log)"

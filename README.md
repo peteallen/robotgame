@@ -1,0 +1,69 @@
+# Robo Sweep! 🤖🧹
+
+A tablet-friendly, no-text toddler game about a robot vacuum cleaning a cozy
+living room. Made for a 3-year-old who loves the Roomba 650 and Roborock Z70.
+
+## Run
+
+```bash
+cd ~/work/robotgame
+npm install
+npm run dev
+# open the printed URL (defaults to http://localhost:5173, or PORT=xxxx npm run dev)
+```
+
+Best on an iPad in landscape (add to home screen for fullscreen), works in any
+browser. Sound starts after the first tap (browser autoplay rules).
+
+## How to play (no reading required)
+
+- **Robo cleans by himself** — wanders, does spiral cleans and wall-follows,
+  slips under the coffee table, sucks up crumbs, cereal, dust bunnies, leaves
+  and sparkles.
+- **Tap the floor** → sprinkle a mess for him to chase (cycles crumb types).
+  **Drag your finger** → a whole crumb trail!
+- **Tap Robo** → a random surprise (13 of them): spin dance, turbo zoom,
+  rainbow trail, bubble party (pop the bubbles!), disco mode, the robotic-arm
+  sock grab (Roborock Z70 style!), toy tidy-up, cat ride, happy beeps,
+  fireworks, a big sneeze, bounce party, hover mode, under-couch treasure dive.
+- **Dust bin fills up** → he drives to the dock, spins 180° and BACKS IN like a
+  real robot (with a backup beeper!), then auto-empties with a big satisfying
+  WHOOSH into the tower's dust bag.
+- **Battery runs low** → he docks and fast-charges (a few seconds), then gets
+  back to work.
+- **Tap the dock** → he comes home, backs in, and stays parked (naps with
+  little z's) until you tap him awake.
+- **Socks live in the laundry basket** — tap the basket to pop one onto the
+  floor, or drag one out and drop it anywhere. Before long the robot arm
+  fetches it back to the basket. Socks persist between sessions.
+- **Tap the cat, TV, plant, toy box, couch** — everything does something.
+- **Star meter** fills as he cleans; five stars = fireworks celebration.
+- If nobody's tapping, surprises happen on their own every minute or so.
+
+## Architecture
+
+- `src/game/Game.js` — main loop, y-sorted rendering, input routing, screen shake/dim.
+- `src/game/entities/Robot.js` — the star: movement AI (wander/spiral/wall-follow/
+  seek/dock state machine), LED-face expressions, suction, battery/bin.
+- `src/game/entities/` — `Dock` (auto-empty tower), `DirtSystem`, `Cat`, `Ambience`.
+- `src/game/world/Room.js` — layout, furniture footprints/collision, tap zones,
+  procedural fallbacks for every sprite.
+- `src/game/actions/` — `ActionRegistry` (weighted, non-repeating) +
+  `DefaultActions.js` (every tap surprise, one object each).
+- `src/game/core/SoundEngine.js` — all audio synthesized live with WebAudio
+  (robot beeps, vacuum hum, the empty-roar, disco chiptune, cartoon meows).
+- `src/game/fx/Particles.js` — confetti/dust/sparkles/bubbles/hearts/flames.
+- `src/game/ui/Hud.js` — icon-only battery, bin, star meter, sound toggle.
+
+## Art pipeline
+
+Sprites generated with the `openrouter-image` skill
+(`google/gemini-3.1-flash-image-preview`, green/magenta screen prompts), then
+keyed + trimmed + aspect-padded by `scripts/process_art.py` into
+`public/assets/sprites/`. Raw renders live in `art/raw/` (not shipped).
+Regenerate one sprite: edit its prompt in `art/prompts.txt`, run
+`./art/gen.sh <name> "<prompt> <style suffix>"`, then
+`python3 scripts/process_art.py <name>`.
+
+Every sprite is optional — the game draws procedural stand-ins for anything
+missing, so it runs before/without generated art.

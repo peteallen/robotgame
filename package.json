@@ -1,0 +1,14 @@
+{
+  "name": "robotgame",
+  "version": "1.0.0",
+  "description": "Robo Sweep! A tablet-friendly, no-text toddler game about a robot vacuum cleaning a living room.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}
