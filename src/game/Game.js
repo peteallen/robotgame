@@ -625,7 +625,7 @@ export class Game {
     const idleEnough = !this.actions.busy && ['clean', 'seek'].includes(r0.state) &&
       !r0.stayDocked && r0.smearT <= 0 && this.smears.count === 0 && !this.pendingMop;
     if (idleEnough) {
-      if (r0.mopMode && this.mopDirt >= 1) {
+      if (r0.mopMode && this.mopDirt >= 1 && (this.dock.canMop() || !this.mopComplained)) {
         this.actions.force('washTrip');
       } else if (r0.mopMode !== this.modeNeedsPads()) {
         this.actions.force('modeSwitch');

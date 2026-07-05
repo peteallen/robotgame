@@ -19,6 +19,8 @@ export function registerDefaultActions(reg) {
   reg.register(HoverMode);
   reg.register(UnderCouch);
   reg.register(MopMode);
+  reg.register(ModeSwitch);
+  reg.register(WashTrip);
 }
 
 // ---------------------------------------------------------------- spin dance
@@ -826,59 +828,215 @@ const DogRide = {
   },
 };
 
+// ---------------- shared dock-trip helper (mop gear lives at the dock) ------
+
+// back-in docking maneuver; returns true when parked
+function dockManeuverStep(g, st, dt) {
+  const r = g.robot;
+  switch (st.dockPhase) {
+    case 'go': {
+      if (r.driveTo(g.dock.approach.x, g.dock.approach.y, 195, 28, { ignoreDock: true })) {
+        st.dockPhase = 'turn';
+      }
+      break;
+    }
+    case 'turn': {
+      if (r.faceAngle(Math.PI / 2, 3)) st.dockPhase = 'back';
+      break;
+    }
+    case 'back': {
+      r.heading = Math.PI / 2;
+      r.targetSpeed = -62;
+      r.x = damp(r.x, g.dock.x, 5, dt);
+      st.beepT = (st.beepT ?? 0) - dt;
+      if (st.beepT <= 0) {
+        st.beepT = 0.72;
+        g.sound.backupBeep();
+      }
+      if (r.y <= g.dock.parkY) {
+        r.y = g.dock.parkY;
+        r.x = g.dock.x;
+        r.targetSpeed = 0;
+        r.speed = 0;
+        st.dockPhase = null;
+        g.sound.dockChime();
+        return true;
+      }
+      break;
+    }
+  }
+  return false;
+}
+
+// ----------------------- equipment change trip (player picked a new mode) ---
+const ModeSwitch = {
+  name: 'modeSwitch',
+  weight: 0,
+  canRun: () => false,
+  maxDur: 60,
+  start(g) {
+    const r = g.robot;
+    const install = g.modeNeedsPads();
+    if (r.mopMode === install) {
+      this.finished = true;
+      return;
+    }
+    this.state = {
+      phase: 'toDock', dockPhase: 'go', t: 0, install,
+      // dirty pads get washed before coming off, like the real thing
+      washFirst: !install && g.mopDirt > 0.3 && g.dock.canMop(),
+    };
+    r.actionDockOk = true;
+    r.setExpr('determined', 4);
+    g.say(install ? 'go_mop_install' : 'remove_pads');
+  },
+  update(g, dt) {
+    const r = g.robot;
+    const st = this.state;
+    if (!st) return;
+    st.t += dt;
+    switch (st.phase) {
+      case 'toDock': {
+        if (dockManeuverStep(g, st, dt)) {
+          if (st.washFirst) {
+            st.phase = 'wash';
+            g.cutaway.show('wash');
+            g.say('washing');
+          } else {
+            st.phase = 'service';
+            g.cutaway.show(st.install ? 'install' : 'remove');
+          }
+          st.t = 0;
+        }
+        break;
+      }
+      case 'wash': {
+        r.targetSpeed = 0;
+        g.dock.cleanWater = clamp(g.dock.cleanWater - dt * (0.35 / 4.6), 0, 1);
+        g.dock.dirtyWater = clamp(g.dock.dirtyWater + dt * (0.35 / 4.6), 0, 1);
+        if (g.cutaway.done) {
+          g.mopDirt = 0;
+          st.phase = 'service';
+          st.t = 0;
+          g.cutaway.show(st.install ? 'install' : 'remove');
+        }
+        break;
+      }
+      case 'service': {
+        r.targetSpeed = 0;
+        if (g.cutaway.done) {
+          r.mopMode = st.install;
+          if (st.install) g.say('mop_installed');
+          g.particles.sparkle(r.x, r.y + 20, 6);
+          st.phase = 'leave';
+          st.t = 0;
+        }
+        break;
+      }
+      case 'leave': {
+        if (r.driveTo(g.dock.approach.x, g.dock.approach.y + 24, 130, 26, { ignoreDock: true })) {
+          this.finished = true;
+        }
+        break;
+      }
+    }
+  },
+  end(g) {
+    g.robot.actionDockOk = false;
+    g.cutaway.dismiss();
+  },
+};
+
+// -------------------------------- wash trip (pads dirty from mopping) -------
+const WashTrip = {
+  name: 'washTrip',
+  weight: 0,
+  canRun: () => false,
+  maxDur: 60,
+  start(g) {
+    const r = g.robot;
+    if (!g.dock.canMop()) {
+      // no water service — complain once, keep working with dirty pads
+      g.say(g.dock.needsClean() ? 'clean_empty' : 'dirty_full', { force: true });
+      g.sound.errorBuzz();
+      g.mopComplained = true;
+      this.state = { phase: 'giveup', t: 0 };
+      return;
+    }
+    this.state = { phase: 'toDock', dockPhase: 'go', t: 0 };
+    r.actionDockOk = true;
+    r.setExpr('determined', 4);
+    g.say('go_mop_wash');
+  },
+  update(g, dt) {
+    const r = g.robot;
+    const st = this.state;
+    if (!st) return;
+    st.t += dt;
+    switch (st.phase) {
+      case 'giveup': {
+        r.targetSpeed = 0;
+        if (st.t > 1.2) this.finished = true;
+        break;
+      }
+      case 'toDock': {
+        if (dockManeuverStep(g, st, dt)) {
+          st.phase = 'wash';
+          st.t = 0;
+          g.cutaway.show('wash');
+          g.say('washing');
+        }
+        break;
+      }
+      case 'wash': {
+        r.targetSpeed = 0;
+        r.spinExtra = Math.sin(st.t * 10) * 0.03;
+        g.dock.cleanWater = clamp(g.dock.cleanWater - dt * (0.35 / 4.6), 0, 1);
+        g.dock.dirtyWater = clamp(g.dock.dirtyWater + dt * (0.35 / 4.6), 0, 1);
+        if (g.cutaway.done) {
+          g.mopDirt = 0;
+          r.spinExtra = 0;
+          g.say('mop_done');
+          g.sound.tada();
+          g.particles.sparkle(r.x, r.y - 40, 10);
+          r.setExpr('happy', 2);
+          st.phase = 'leave';
+          st.t = 0;
+        }
+        break;
+      }
+      case 'leave': {
+        if (r.driveTo(g.dock.approach.x, g.dock.approach.y + 24, 130, 26, { ignoreDock: true })) {
+          this.finished = true;
+        }
+        break;
+      }
+    }
+  },
+  end(g) {
+    g.robot.actionDockOk = false;
+    g.robot.spinExtra = 0;
+    g.cutaway.dismiss();
+  },
+};
+
 // ---------------------------------------------- mop emergency (poopocalypse)
 // Never picked randomly — the game FORCES it once the robot realizes what it
-// has been driving through.
+// has been driving through. Installs pads if needed and mops the mess; the
+// wash trip and any pad removal follow on their own via the mode watchdogs.
 const MopMode = {
   name: 'mopMode',
   weight: 0,
   canRun: () => false,
-  maxDur: 120,
+  maxDur: 90,
   start(g) {
     const r = g.robot;
-    this.state = { phase: 'notice', t: 0, sprayT: 0, squeegeeT: 0, dockPhase: null, beepT: 0, success: false };
+    this.state = { phase: 'notice', t: 0, dockPhase: null, beepT: 0, success: false };
     r.targetSpeed = 0;
     r.actionDockOk = true;
     r.setExpr('dizzy', 2.2);
     g.sound.alarm();
     g.shake(3);
-  },
-  // shared back-in docking maneuver; returns true when parked
-  dockManeuver(g, st, dt) {
-    const r = g.robot;
-    switch (st.dockPhase) {
-      case 'go': {
-        if (r.driveTo(g.dock.approach.x, g.dock.approach.y, 195, 28, { ignoreDock: true })) {
-          st.dockPhase = 'turn';
-        }
-        break;
-      }
-      case 'turn': {
-        if (r.faceAngle(Math.PI / 2, 3)) st.dockPhase = 'back';
-        break;
-      }
-      case 'back': {
-        r.heading = Math.PI / 2;
-        r.targetSpeed = -62;
-        r.x = damp(r.x, g.dock.x, 5, dt);
-        st.beepT -= dt;
-        if (st.beepT <= 0) {
-          st.beepT = 0.72;
-          g.sound.backupBeep();
-        }
-        if (r.y <= g.dock.parkY) {
-          r.y = g.dock.parkY;
-          r.x = g.dock.x;
-          r.targetSpeed = 0;
-          r.speed = 0;
-          st.dockPhase = null;
-          g.sound.dockChime();
-          return true;
-        }
-        break;
-      }
-    }
-    return false;
   },
   update(g, dt) {
     const r = g.robot;
@@ -896,7 +1054,11 @@ const MopMode = {
         if (st.t > 1.7) {
           r.spinExtra = 0;
           st.t = 0;
-          if (!g.dock.canMop()) {
+          if (r.mopMode) {
+            // pads already on — straight to work
+            r.setExpr('determined', 4);
+            st.phase = 'mop';
+          } else if (!g.dock.canMop()) {
             // no water service — complain and leave the mess for the human
             g.say(g.dock.needsClean() ? 'clean_empty' : 'dirty_full', { force: true });
             g.sound.errorBuzz();
@@ -918,27 +1080,19 @@ const MopMode = {
         break;
       }
       case 'toDock': {
-        if (this.dockManeuver(g, st, dt)) {
+        if (dockManeuverStep(g, st, dt)) {
           st.phase = 'install';
           st.t = 0;
+          g.cutaway.show('install');
         }
         break;
       }
       case 'install': {
-        // pads clip on at the dock
+        // pads clip on at the dock (undercarriage cam shows the whole thing)
         r.targetSpeed = 0;
-        if (st.t > 0.4 && !st.clunked) {
-          st.clunked = true;
-          g.sound.clunk();
-        }
-        if (st.t > 0.9 && !r.mopMode) {
+        if (g.cutaway.done) {
           r.mopMode = true;
-          g.sound.clunk();
-          g.particles.sparkle(r.x, r.y + 30, 6);
-        }
-        if (st.t > 1.6) {
           g.say('mop_installed');
-          r.trailMode = 'mop';
           st.phase = 'leaveDock';
           st.t = 0;
         }
@@ -952,132 +1106,30 @@ const MopMode = {
         break;
       }
       case 'mop': {
+        // ambient pad-wiping (in Game.update) does the cleaning — this just
+        // drives the robot over every last smear
         const pile = g.dirt.find((d) => d.type === 'poop');
         const smear = g.smears.nearest(r.x, r.y);
         const target = smear || pile;
         if (!target) {
-          st.phase = 'toWash';
-          st.t = 0;
-          st.dockPhase = 'go';
-          g.say('go_mop_wash');
+          st.success = true;
+          g.mopDirt = 1; // filthy pads — the wash trip follows on its own
           g.sound.happyBeeps(2);
+          this.finished = true;
           break;
         }
         r.driveTo(target.x, target.y, 165, 26);
         break;
       }
-      case 'toWash': {
-        if (this.dockManeuver(g, st, dt)) {
-          st.phase = 'wash';
-          st.t = 0;
-          g.say('washing');
-        }
-        break;
-      }
-      case 'wash': {
-        // scrub scrub — clean water in, dirty water out, gauges move
-        r.targetSpeed = 0;
-        r.spinExtra = Math.sin(st.t * 10) * 0.04;
-        g.dock.cleanWater = clamp(g.dock.cleanWater - dt * (0.35 / 3), 0, 1);
-        g.dock.dirtyWater = clamp(g.dock.dirtyWater + dt * (0.35 / 3), 0, 1);
-        st.beepT -= dt;
-        if (st.beepT <= 0) {
-          st.beepT = 0.85;
-          g.sound.washSwish();
-        }
-        if (Math.random() < 0.4) {
-          g.particles.add({
-            x: r.x + rand(-40, 40), y: r.y + rand(10, 40),
-            kind: 'bubble', size: rand(4, 9), life: rand(0.4, 0.8),
-            vy: rand(-35, -10), vx: rand(-12, 12),
-          });
-        }
-        if (st.t > 3.0) {
-          st.phase = 'uninstall';
-          st.t = 0;
-          r.spinExtra = 0;
-        }
-        break;
-      }
-      case 'uninstall': {
-        r.targetSpeed = 0;
-        if (st.t > 0.35 && r.mopMode) {
-          r.mopMode = false;
-          if (r.trailMode === 'mop') r.trailMode = null;
-          g.sound.clunk();
-        }
-        if (st.t > 0.9) {
-          st.phase = 'leaveDock2';
-          st.t = 0;
-          st.success = true;
-          g.say('mop_done');
-          g.sound.tada();
-          g.particles.confettiBurst(r.x, r.y - 40, 24);
-        }
-        break;
-      }
-      case 'leaveDock2': {
-        if (r.driveTo(g.dock.approach.x, g.dock.approach.y + 20, 130, 26, { ignoreDock: true })) {
-          this.finished = true;
-        }
-        break;
-      }
-    }
-    // the pad wipes whatever it passes over
-    if (r.mopMode) {
-      const wiped = g.smears.wipeAt(r.x, r.y, 64);
-      if (wiped > 0) {
-        st.squeegeeT -= dt;
-        if (st.squeegeeT <= 0) {
-          st.squeegeeT = 0.28;
-          g.sound.squeegee();
-        }
-        for (let i = 0; i < Math.min(wiped, 3); i++) {
-          g.particles.add({
-            x: r.x + rand(-30, 30), y: r.y + rand(0, 34),
-            kind: 'bubble', size: rand(5, 10), life: rand(0.4, 0.8),
-            vy: rand(-40, -12), vx: rand(-16, 16),
-          });
-        }
-      }
-      // rolling over a remaining pile in mop mode cleans it whole
-      const pile = g.dirt.find((d) => d.type === 'poop' && dist(d.x, d.y, r.x, r.y) < r.radius + 14);
-      if (pile) {
-        g.dirt.remove(pile);
-        g.sound.squelch();
-        g.particles.dustPuff(pile.x, pile.y, 8, 'rgba(150, 110, 70, 0.45)');
-        for (let i = 0; i < 8; i++) {
-          g.particles.add({
-            x: pile.x + rand(-20, 20), y: pile.y + rand(-14, 14),
-            kind: 'bubble', size: rand(6, 12), life: rand(0.5, 1), vy: rand(-50, -20),
-          });
-        }
-      }
-      // fine water mist behind while moving
-      st.sprayT -= dt;
-      if (st.sprayT <= 0 && Math.abs(r.speed) > 30) {
-        st.sprayT = 0.1;
-        const bx = r.x - Math.cos(r.heading) * 40;
-        const by = r.y - Math.sin(r.heading) * 40;
-        g.particles.add({
-          x: bx + rand(-22, 22), y: by + rand(-10, 10),
-          kind: 'dot', color: 'rgba(120, 200, 255, 0.7)',
-          size: rand(3, 5), life: rand(0.3, 0.55),
-          vy: rand(-15, 10), vx: rand(-14, 14),
-        });
-      }
     }
   },
   end(g) {
     const r = g.robot;
-    r.mopMode = false;
-    if (r.trailMode === 'mop') r.trailMode = null;
     r.actionDockOk = false;
     r.spinExtra = 0;
+    g.cutaway.dismiss();
     if (this.state?.success) {
-      r.setExpr('love', 2);
-      g.sound.fanfare();
-      g.particles.sparkle(r.x, r.y - 40, 14);
+      r.setExpr('happy', 2);
     }
   },
 };
