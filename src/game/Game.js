@@ -2,6 +2,7 @@
 import { TAU, clamp, lerp, rand, pick, chance, dist, damp, angleTo } from './core/math.js';
 import { SoundEngine } from './core/SoundEngine.js';
 import { Voice } from './core/Voice.js';
+import { Sfx } from './core/Sfx.js';
 import { Particles } from './fx/Particles.js';
 import { Smears } from './fx/Smears.js';
 import { Cutaway } from './fx/Cutaway.js';
@@ -23,6 +24,7 @@ export class Game {
     this.assets = assets;
     this.sound = new SoundEngine();
     this.voice = new Voice(this.sound);
+    this.sfx = new Sfx(this.sound);
     this.particles = new Particles();
     this.smears = new Smears(this);
     this.room = new Room(this);
@@ -479,11 +481,16 @@ export class Game {
     if (hit === 'plant') {
       this.room.plantSway = 1;
       this.sound.whoosh();
-      // leaves tumble down for the robot to eat
-      for (let i = 0; i < 2; i++) {
-        const lx = 1520 + rand(-70, 40);
-        const ly = 900 + rand(-30, 30);
-        if (this.room.isFree(lx, ly, 26)) this.dirt.spawn('leaf', lx, ly, { drop: rand(120, 200) });
+      // leaves tumble down for the robot to eat — the pot's own footprint is
+      // solid, so hunt for clear floor just left of and below it
+      let dropped = 0;
+      for (let i = 0; i < 24 && dropped < 2; i++) {
+        const lx = 1505 + rand(-170, 30);
+        const ly = 900 + rand(-45, 45);
+        if (this.room.isFree(lx, ly, 30)) {
+          this.dirt.spawn('leaf', lx, ly, { drop: rand(120, 200) });
+          dropped++;
+        }
       }
       const d = this.dirt.nearestVac(r.x, r.y, false);
       if (d && chance(0.6)) r.notifyNewDirt(d);
@@ -741,6 +748,16 @@ export class Game {
       if (!this.actions.busy && this.robot.state === 'clean' && !this.robot.stayDocked &&
           this.dirt.items.some((d) => (d.type === 'toy_ball' || d.type === 'toy_block') && !d.toss && !d.fading)) {
         this.actions.triggerByName('tidyToy');
+      }
+    }
+
+    // zoomies: every so often the pup decides the robot MUST be chased
+    this.dogChaseT = (this.dogChaseT ?? rand(70, 130)) - dt;
+    if (this.dogChaseT <= 0) {
+      this.dogChaseT = rand(110, 200);
+      if (!this.actions.busy && !this.messActive() && !r0.stayDocked &&
+          ['clean', 'seek'].includes(r0.state)) {
+        this.dog.startChase();
       }
     }
 

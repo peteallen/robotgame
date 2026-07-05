@@ -801,7 +801,7 @@ const DogRide = {
   start(g) {
     g.dog.hurry = true;
     g.dog.beginWalk({ x: g.robot.x, y: g.robot.y });
-    g.sound.bark();
+    g.dog.bark();
     g.robot.setExpr('happy', 4);
     this.state.mounted = false;
   },
@@ -817,7 +817,7 @@ const DogRide = {
         dog.tryRide();
         this.state.mounted = true;
         g.particles.hearts(r.x, r.y - 60, 4);
-        g.sound.bark();
+        g.dog.bark();
       }
       if (this.elapsed > 9 && !this.state.mounted) this.finished = true;
     } else {

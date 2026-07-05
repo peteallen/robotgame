@@ -30,8 +30,8 @@ browser. Sound starts after the first tap (browser autoplay rules).
   home, spins 180° and BACKS IN (with a backup beeper!), then auto-empties with
   a big WHOOSH into the dock's dust bag.
 - **Battery runs low** → "Going to charge" → docks and fast-charges.
-- **The dog** naps, trots around, rides the robot — and sometimes poops on the
-  floor (randomly, or when you tap the dog). The robot drives through it,
+- **The dog** naps, trots around, rides the robot — and poops on the floor
+  every time you tap him (toddler's orders). The robot drives through it,
   obliviously smears it EVERYWHERE, then: "Uh oh." → "Going to install the mop
   pads" → docks for pads → mops the whole mess → "Going to wash the mop" →
   docks again to wash (watch the water tanks change).
@@ -60,9 +60,23 @@ browser. Sound starts after the first tap (browser autoplay rules).
   (`.sock-stash.json`), so every browser/device in the house sees the same
   basket; on static hosting (GitHub Pages) it falls back to per-browser
   localStorage.
-- **Tap the cat, TV, plant, toy box, couch** — everything does something.
+- **He gets stuck!** Every few minutes he wedges himself under the couch arm
+  or the coffee table — sticking out just enough to grab — status light
+  flashing red (with a rotating beacon spilling across the floor) and pleading
+  "Help! I'm stuck! Please move me somewhere new." Press-and-hold to pick him
+  up (wheels dangling), carry him anywhere, and set him down. He keeps
+  flashing until you tap him — "Thank you! Resuming cleaning." — then does the
+  little relocalizing spin real robots do. A plain click won't free him; he
+  has to be *carried*.
+- **Clean the whole floor → victory party.** Dirt only appears when someone
+  makes it (tap the floor, shake the plant for falling leaves, launch toys,
+  pull socks out, poke the dog) — nothing falls on its own. When the last
+  speck, sock and toy is gone: "The room is all clean!", fireworks, a proud
+  pirouette, and the floor sparkles. Then it STAYS clean until Theo strikes.
+- **Tap the dog, TV, plant, toy box, couch** — everything does something.
 - **Star meter** fills as he cleans; five stars = fireworks celebration.
-- If nobody's tapping, surprises happen on their own every minute or so.
+- If nobody's tapping, surprises happen on their own every minute or so
+  (dances, hops, dog rides — never new messes).
 
 ## Architecture
 

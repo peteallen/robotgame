@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { SPRITE_MANIFEST, VOICE_LINES } from '../src/game/core/assetManifest.js';
+import { SPRITE_MANIFEST, VOICE_LINES, SFX_CLIPS } from '../src/game/core/assetManifest.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const useDist = process.argv.includes('--dist');
@@ -80,6 +80,19 @@ function validateManifestFiles() {
     const filename = path.basename(file);
     if (!manifestVoiceFiles.has(filename)) fail(`Voice file ${rel(file)} is not listed in VOICE_LINES`);
   }
+
+  const sfxEntries = SFX_CLIPS.map((name) => [name, `${name}.mp3`]);
+  assertUniqueValues('Sfx manifest', sfxEntries);
+  const sfxDir = path.join(assetRoot, 'sfx');
+  for (const [key, filename] of sfxEntries) {
+    const file = path.join(sfxDir, filename);
+    if (!exists(file)) fail(`Sfx clip "${key}" points to missing file ${rel(file)}`);
+  }
+  const manifestSfxFiles = new Set(sfxEntries.map(([, filename]) => filename));
+  for (const file of visibleAssetFiles(sfxDir, new Set(['.wav', '.mp3', '.ogg', '.m4a']))) {
+    const filename = path.basename(file);
+    if (!manifestSfxFiles.has(filename)) fail(`Sfx file ${rel(file)} is not listed in SFX_CLIPS`);
+  }
 }
 
 function jsSourceFiles() {
@@ -97,14 +110,22 @@ function collectRegexMatches(regex, text, file, kind) {
 function validateSourceReferences() {
   const spriteKeys = new Set(Object.keys(SPRITE_MANIFEST));
   const voiceKeys = new Set(VOICE_LINES);
+  const sfxKeys = new Set(SFX_CLIPS);
   const spriteRefs = [];
   const voiceRefs = [];
+  const sfxRefs = [];
 
   for (const file of jsSourceFiles()) {
     const text = fs.readFileSync(file, 'utf8');
     spriteRefs.push(...collectRegexMatches(/\bassets\.get(?:Tinted)?\(\s*['"]([A-Za-z0-9_-]+)['"]/g, text, file, 'asset'));
     spriteRefs.push(...collectRegexMatches(/\b(?:game|g|this)\.assets\.get(?:Tinted)?\(\s*['"]([A-Za-z0-9_-]+)['"]/g, text, file, 'asset'));
     spriteRefs.push(...collectRegexMatches(/\bsprite:\s*['"]([A-Za-z0-9_-]+)['"]/g, text, file, 'sprite'));
+    for (const call of text.matchAll(/\bsfx\.play\(([^;\n]*)\)/g)) {
+      const args = call[1] ?? '';
+      for (const literal of args.matchAll(/['"]([a-z0-9_]+)['"]/g)) {
+        sfxRefs.push({ value: literal[1], file, kind: 'sfx' });
+      }
+    }
 
     for (const call of text.matchAll(/\b(?:this\.)?say\(([^;\n]*)\)/g)) {
       const args = call[1] ?? '';
@@ -125,6 +146,9 @@ function validateSourceReferences() {
   }
   for (const ref of voiceRefs) {
     if (!voiceKeys.has(ref.value)) fail(`Source references unknown voice line "${ref.value}" in ${rel(ref.file)}`);
+  }
+  for (const ref of sfxRefs) {
+    if (!sfxKeys.has(ref.value)) fail(`Source references unknown sfx clip "${ref.value}" in ${rel(ref.file)}`);
   }
 }
 
@@ -159,10 +183,26 @@ function validateDistVersion() {
   }
 }
 
+function validateSfxGenerator() {
+  const script = path.join(root, 'scripts/gen_sfx.py');
+  if (!exists(script)) return;
+  const text = fs.readFileSync(script, 'utf8');
+  const block = text.match(/SFX\s*=\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';
+  const generated = new Set([...block.matchAll(/^\s*"([^"]+)":/gm)].map((match) => match[1]));
+  const manifest = new Set(SFX_CLIPS);
+  for (const name of manifest) {
+    if (!generated.has(name)) fail(`scripts/gen_sfx.py is missing sfx clip "${name}"`);
+  }
+  for (const name of generated) {
+    if (!manifest.has(name)) fail(`scripts/gen_sfx.py has extra sfx clip "${name}" not listed in SFX_CLIPS`);
+  }
+}
+
 validateManifestFiles();
 if (!useDist) {
   validateSourceReferences();
   validateVoiceGenerator();
+  validateSfxGenerator();
 }
 validateDistVersion();
 

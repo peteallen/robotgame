@@ -225,6 +225,14 @@ export class Robot {
     }
   }
 
+  // the dog just declared a chase — startled hop, then scoot!
+  onChased() {
+    if (this.controlled) return;
+    this.hop(180);
+    this.setExpr('dizzy', 2);
+    this.game.sound.questionBeep();
+  }
+
   notifyNewDirt(d) {
     if (this.controlled) return;
     if (!this.game.modeHasVac()) return; // mop-only: crumbs aren't its job
@@ -595,6 +603,11 @@ export class Robot {
 
   updateClean(dt) {
     const g = this.game;
+    // being chased overrides fancy patterns — just RUN (in a fun way)
+    if (g.dog?.state === 'chase' && this.cleanMode !== 'wander') {
+      this.cleanMode = 'wander';
+      this.modeTimer = rand(4, 7);
+    }
     // "fate" waypoint: looks like ordinary cleaning, happens to pass through
     // whatever the dog left on the floor
     if (this.fateTarget) {
@@ -671,9 +684,21 @@ export class Robot {
     }
 
     switch (this.cleanMode) {
-      case 'wander':
-        this.targetSpeed = 135;
+      case 'wander': {
+        const dog = g.dog;
+        if (dog && dog.state === 'chase') {
+          // yipes — scoot away from the pup! (bump recovery still applies,
+          // so fleeing into a wall stays a comedy, not a clip-through)
+          if (dist(this.x, this.y, dog.x, dog.y) < 340) {
+            const flee = angleTo(dog.x, dog.y, this.x, this.y);
+            this.heading = angleApproach(this.heading, flee, 2.6 * dt);
+          }
+          this.targetSpeed = 200;
+        } else {
+          this.targetSpeed = 135;
+        }
         break;
+      }
       case 'spiral': {
         this.spiralT += dt;
         this.targetSpeed = 120;

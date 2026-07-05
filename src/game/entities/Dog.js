@@ -22,12 +22,27 @@ export class Dog {
     this.hurry = false;
     this.sniffT = 0;
     this.circleAnchor = null;
+    this.chaseT = 0;
+    this.barkT = 0;
+    this.panting = 0;
+  }
+
+  // real recorded bark when the clip pack is loaded, synth beep-bark if not
+  bark(kind = 'single') {
+    const g = this.game;
+    if (!g.sfx.play(kind === 'excited' ? 'bark_excited' : 'bark_single')) g.sound.bark();
   }
 
   get baseline() {
     if (this.state === 'ride') return this.game.robot.y + 2;
-    if (this.state === 'sleep') return this.y + 66;
-    return this.y + 34;
+    const base = this.state === 'sleep' ? this.y + 66 : this.y + 34;
+    // anywhere on/near the bed, draw ON TOP of it — a corgi sitting in his
+    // bed must never be hidden behind the bed sprite
+    const bed = this.game.room.furniture.find((f) => f.name === 'catbed');
+    if (bed && dist(this.x, this.y, bed.cx, bed.cy) < 95) {
+      return Math.max(base, bed.baseline + 2);
+    }
+    return base;
   }
 
   pooping() {
@@ -39,7 +54,8 @@ export class Dog {
     this.stateT += dt;
     this.tailT += dt;
     if (this.barkCooldown > 0) this.barkCooldown -= dt;
-    const trotting = this.state === 'walk' || this.state === 'goPotty';
+    if (this.panting > 0) this.panting -= dt;
+    const trotting = ['walk', 'goPotty', 'chase'].includes(this.state);
     this.bob = Math.abs(Math.sin(this.stateT * 8)) * (trotting ? 6 : 0);
 
     switch (this.state) {
@@ -133,7 +149,7 @@ export class Dog {
           this.state = 'proud';
           this.stateT = 0;
           this.delivered = false;
-          g.sound.bark();
+          this.bark();
         }
         break;
       }
@@ -153,6 +169,32 @@ export class Dog {
         this.rideT -= dt;
         if (this.rideT <= 0 || ['align', 'empty', 'charge', 'docked', 'washpads'].includes(r.state)) {
           this.hopOff();
+        }
+        break;
+      }
+      case 'chase': {
+        // ZOOMIES. The robot must be barked at, immediately and at length.
+        const r = g.robot;
+        this.chaseT -= dt;
+        const d = dist(this.x, this.y, r.x, r.y);
+        const a = angleTo(this.x, this.y, r.x, r.y);
+        this.heading = angleApproach(this.heading, a, 6 * dt);
+        if (d > 105) {
+          this.x += Math.cos(this.heading) * 205 * dt;
+          this.y += Math.sin(this.heading) * 205 * dt;
+        }
+        this.barkT -= dt;
+        if (this.barkT <= 0) {
+          this.barkT = rand(0.9, 1.7);
+          this.bark(chance(0.4) ? 'excited' : 'single');
+        }
+        // done, or the robot escaped somewhere un-chaseable (dock, a hand...)
+        if (this.chaseT <= 0 || !['clean', 'seek', 'leaving', 'godock', 'action'].includes(r.state)) {
+          this.state = 'sit';
+          this.stateT = 0;
+          this.decideT = rand(6, 12);
+          this.panting = 2.8;
+          if (!g.sfx.play('dog_pant')) g.sound.sniff();
         }
         break;
       }
@@ -184,6 +226,19 @@ export class Dog {
     this.stateT = 0;
   }
 
+  // tear after the robot, barking — pure joy, zero malice
+  startChase() {
+    const g = this.game;
+    if (['ride', 'startle', 'chase'].includes(this.state) || this.pooping()) return false;
+    if (!['clean', 'seek', 'leaving', 'godock'].includes(g.robot.state)) return false;
+    this.state = 'chase';
+    this.stateT = 0;
+    this.chaseT = rand(6.5, 9.5);
+    this.barkT = 0.15;
+    g.robot.onChased();
+    return true;
+  }
+
   // trot off to a good spot and do the deed
   startPottyRun() {
     if (this.state === 'ride' || this.pooping()) return false;
@@ -202,7 +257,7 @@ export class Dog {
     this.state = 'goPotty';
     this.stateT = 0;
     this.delivered = false;
-    g.sound.bark();
+    this.bark();
     return true;
   }
 
@@ -224,7 +279,7 @@ export class Dog {
     this.state = 'ride';
     this.rideT = rand(10, 16);
     this.stateT = 0;
-    this.game.sound.bark();
+    this.bark();
     return true;
   }
 
@@ -241,7 +296,7 @@ export class Dog {
     if (this.barkCooldown > 0) return;
     this.barkCooldown = 0.7;
     if (this.state === 'ride') {
-      g.sound.bark();
+      this.bark();
       g.particles.hearts(this.x, this.y - 40, 3);
       return;
     }
@@ -251,12 +306,12 @@ export class Dog {
     if (this.state === 'sleep') {
       this.state = 'sit';
       this.stateT = 0;
-      g.sound.bark();
+      this.bark();
       g.particles.add({ x: this.x, y: this.y - 60, kind: 'heart', color: '#ff8fab', size: 12, vy: -60, life: 1 });
       return;
     }
     if (dist(this.x, this.y, g.robot.x, g.robot.y) < 240 && chance(0.55) && this.tryRide()) return;
-    g.sound.bark();
+    this.bark();
     if (chance(0.5)) this.beginWalk();
   }
 
@@ -270,13 +325,13 @@ export class Dog {
     const squatting = this.state === 'squat';
     const img = sleeping
       ? (assets.get('dog_sleep') || assets.get('dog_sit'))
-      : (this.state === 'walk' || this.state === 'goPotty' || this.state === 'circling')
+      : ['walk', 'goPotty', 'circling', 'chase'].includes(this.state)
         ? assets.get('dog_walk')
         : assets.get('dog_sit');
 
     ctx.save();
     ctx.translate(this.x, this.y - this.bob - (riding ? 14 : 0));
-    const facingLeft = Math.cos(this.heading) < 0 && ['walk', 'goPotty', 'circling'].includes(this.state);
+    const facingLeft = Math.cos(this.heading) < 0 && ['walk', 'goPotty', 'circling', 'chase'].includes(this.state);
     if (facingLeft) ctx.scale(-1, 1);
     if (squatting) {
       // hunched, trembling concentration
@@ -350,7 +405,7 @@ export class Dog {
       ctx.ellipse(0, 22, 24, 11, 0, 0, TAU);
       ctx.fill();
       // stumpy legs
-      const walk = ['walk', 'goPotty', 'circling'].includes(this.state);
+      const walk = ['walk', 'goPotty', 'circling', 'chase'].includes(this.state);
       ctx.strokeStyle = orange;
       ctx.lineWidth = 10;
       ctx.lineCap = 'round';
@@ -386,8 +441,8 @@ export class Dog {
       ctx.beginPath();
       ctx.arc(24, -2, 3.4, 0, TAU);
       ctx.fill();
-      // tongue
-      if (this.state === 'proud' || chance(0.0)) {
+      // tongue (out while proud or panting after a good chase)
+      if (this.state === 'proud' || this.panting > 0) {
         ctx.fillStyle = '#ff8fab';
         ctx.beginPath();
         ctx.ellipse(26, 5, 3.5, 6, 0.2, 0, TAU);
