@@ -117,7 +117,16 @@ export class Cutaway {
       ctx.fill();
     }
 
-    // the underside
+    // soft spotlight so the navy underside pops off the dark panel
+    const spot = ctx.createRadialGradient(0, 0, 60, 0, 0, 300);
+    spot.addColorStop(0, 'rgba(150, 190, 235, 0.34)');
+    spot.addColorStop(1, 'rgba(150, 190, 235, 0)');
+    ctx.fillStyle = spot;
+    ctx.beginPath();
+    ctx.arc(0, 0, 300, 0, TAU);
+    ctx.fill();
+
+    // the underside (wobble transform balanced by the restore below)
     const img = g.assets.get('underside');
     const S = 420;
     ctx.save();
@@ -243,7 +252,8 @@ export class Cutaway {
       ctx.fill();
     }
     ctx.globalAlpha = 1;
-    ctx.restore();
+    ctx.restore(); // underside wobble
+    ctx.restore(); // panel transform
   }
 
   // how dirty the pads look when a wash starts (captured lazily)
