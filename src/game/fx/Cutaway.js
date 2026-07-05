@@ -7,8 +7,8 @@ import { roundRect } from '../world/Room.js';
 const DUR = { install: 3.0, remove: 2.6, wash: 4.6 };
 // pad mounts on the underside sprite (fractions of sprite half-size)
 const MOUNTS = [
-  { x: -0.42, y: 0.55 },
-  { x: 0.42, y: 0.55 },
+  { x: -0.4, y: 0.46 },
+  { x: 0.4, y: 0.46 },
 ];
 
 export class Cutaway {
