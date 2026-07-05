@@ -34,6 +34,7 @@ export class Game {
     this.cutaway = new Cutaway(this);
     this.splash = new Splash(this);
     this.pendingMop = false;
+    this.roomDirty = false; // set by DirtSystem.spawn; cleared by the win party
 
     // cleaning mode the PLAYER chose: 'vac' | 'mop' | 'both'
     this.userMode = this.loadMode();
@@ -63,6 +64,7 @@ export class Game {
     this.downTime = 0;
     this.lastCrumb = null;
     this.dragSpawned = 0;
+    this.robotDrag = null; // rescuing a trapped robot by hand
 
     // socks live in the laundry basket between deliveries — shared across
     // every browser via the dev server's stash (localStorage as fallback)
@@ -272,6 +274,17 @@ export class Game {
     this.sound.unlock();
     this.lastInteraction = this.time;
     const p = this.screenToWorld(cx, cy);
+    // a trapped robot can be grabbed: press it, drag it somewhere safe
+    const act = this.actions.current;
+    if (act?.name === 'trapped' && act.grabbable() &&
+        dist(p.x, p.y, this.robot.x, this.robot.y - this.robot.z) < this.robot.radius + 46) {
+      this.robotDrag = { moved: false };
+      this.pointerDown = true;
+      this.downPos = p;
+      this.lastCrumb = null;
+      this.pendingSockDrag = false;
+      return;
+    }
     this.pointerDown = true;
     this.downPos = p;
     this.downTime = this.time;
@@ -283,6 +296,26 @@ export class Game {
 
   onPointerMove(cx, cy) {
     if (this.splash.active) return;
+    // the trapped robot rides the finger to safety
+    if (this.robotDrag && this.pointerDown) {
+      const act = this.actions.current;
+      if (act?.name !== 'trapped') {
+        this.robotDrag = null;
+        return;
+      }
+      const p = this.screenToWorld(cx, cy);
+      if (!this.robotDrag.moved && this.downPos &&
+          dist(p.x, p.y, this.downPos.x, this.downPos.y) > 14) {
+        this.robotDrag.moved = true;
+        act.grab(this);
+      }
+      if (this.robotDrag.moved) {
+        const b = this.room.bounds;
+        this.robot.x = clamp(p.x, b.minX, b.maxX);
+        this.robot.y = clamp(p.y, b.minY, b.maxY);
+      }
+      return;
+    }
     if (!this.pointerDown || !this.lastCrumb) return;
     const p = this.screenToWorld(cx, cy);
     // a sock riding the finger
@@ -324,6 +357,18 @@ export class Game {
     if (!this.pointerDown) return;
     this.pointerDown = false;
     const p = this.screenToWorld(cx, cy);
+    // set the rescued robot down — or, if it was just a tap, poke it
+    if (this.robotDrag) {
+      const drag = this.robotDrag;
+      this.robotDrag = null;
+      const act = this.actions.current;
+      if (act?.name === 'trapped') {
+        if (drag.moved) act.place(this, p.x, p.y);
+        else act.poke(this);
+      }
+      this.downPos = null;
+      return;
+    }
     // drop the dragged sock
     if (this.dragSock) {
       this.dropSock(p.x, p.y);
@@ -590,7 +635,9 @@ export class Game {
     if (this.pendingMop || (this.smears.count > 0 && !r0.mopMode && r0.smearT <= 0)) {
       const dockStates = ['align', 'empty', 'charge', 'docked'];
       const allowed = this.dock.canMop() || !this.mopComplained;
-      if (allowed && !dockStates.includes(r0.state) && this.actions.current?.name !== 'mopMode') {
+      // (a trapped robot can't rush off to mop — the mess waits for the rescue)
+      if (allowed && !dockStates.includes(r0.state) && this.actions.current?.name !== 'mopMode' &&
+          this.actions.current?.name !== 'trapped') {
         this.pendingMop = false;
         this.actions.force('mopMode');
       } else if (!allowed) {
@@ -632,6 +679,14 @@ export class Game {
       }
     } else if (r0.trailMode === 'mop') {
       r0.trailMode = null;
+    }
+
+    // the LAST speck, sock and toy is gone → throw the all-clean victory party!
+    if (this.roomDirty && !this.actions.busy && ['clean', 'seek'].includes(r0.state) &&
+        !r0.stayDocked && r0.smearT <= 0 && this.smears.count === 0 && !this.pendingMop &&
+        !this.dog.pooping() && this.dirt.items.length === 0) {
+      this.roomDirty = false;
+      this.actions.force('winParty');
     }
 
     // pads dirty → wash trip; player-chosen mode mismatch → equipment trip
@@ -676,12 +731,8 @@ export class Game {
         r0.cleanMode = 'wander';
       }
     }
-    // 4. and sometimes the dog just... decides. all on its own.
-    this.pottyT = (this.pottyT ?? rand(110, 190)) - dt;
-    if (this.pottyT <= 0) {
-      this.pottyT = rand(140, 240);
-      if (!this.messActive()) this.dog.startPottyRun();
-    }
+    // (the dog only poops when poked now — no debris appears on its own, so a
+    // clean room STAYS clean and the win party means something)
 
     // stray toys get tidied back into the toybox by the arm too
     this.toyTidyT = (this.toyTidyT ?? 8) - dt;
@@ -693,13 +744,26 @@ export class Game {
       }
     }
 
+    // every so often the robot wedges itself under something and needs rescuing
+    this.trapT = (this.trapT ?? rand(50, 90)) - dt;
+    if (this.trapT <= 0) {
+      this.trapT = rand(130, 220);
+      if (!this.actions.busy && r0.state === 'clean' && !r0.stayDocked &&
+          !this.messActive() && !this.dock.anyAlert() && this.dog.state !== 'ride' &&
+          r0.battery > 0.3 && r0.bin < 0.9 &&
+          r0.mopMode === this.modeNeedsPads() && !(r0.mopMode && this.mopDirt >= 1)) {
+        this.actions.force('trapped');
+      }
+    }
+
     // if nobody is tapping, the world stays alive: occasional surprise events
+    // (no 'sneeze' here — it scatters crumbs, and debris never appears on its own)
     this.autoEventT = (this.autoEventT ?? rand(40, 70)) - dt;
     if (this.autoEventT <= 0) {
       this.autoEventT = rand(50, 90);
       const idle = this.time - (this.lastInteraction ?? 0) > 20;
       if (idle && !this.actions.busy && this.robot.state === 'clean') {
-        this.actions.triggerByName(pick(['sneeze', 'happyBeeps', 'dogRide', 'bounceParty', 'spinDance', 'tidyToy']));
+        this.actions.triggerByName(pick(['happyBeeps', 'dogRide', 'bounceParty', 'spinDance', 'tidyToy']));
       }
     }
     if (this.shakeAmt > 0) this.shakeAmt = Math.max(0, this.shakeAmt - 14 * dt);

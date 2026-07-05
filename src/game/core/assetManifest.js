@@ -61,4 +61,7 @@ export const VOICE_LINES = Object.freeze([
   'clean_empty',
   'dirty_full',
   'thank_you',
+  'help_stuck',
+  'thank_resume',
+  'all_clean',
 ]);
