@@ -379,7 +379,7 @@ export class Game {
     // 7. furniture & wall objects
     const hit = this.room.tapFurniture(x, y);
     if (hit === 'tv') {
-      this.room.tv.on = this.room.tv.on > 0 ? 0 : 9;
+      this.room.tv.on = this.room.tv.on > 0 ? 0 : 12;
       this.sound.ackBeep();
       if (this.room.tv.on > 0) this.sound.happyBeeps(4);
       return;
