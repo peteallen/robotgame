@@ -44,11 +44,10 @@ jobs:
           mkdir ../robotgame-pages
           cp -R dist/. ../robotgame-pages/
           cd ../robotgame-pages
-          git init
-          git checkout -b gh-pages
+          git init --initial-branch=gh-pages
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add --all
           git commit -m "Deploy ${GITHUB_SHA}"
-          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
-          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" push --force origin gh-pages
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force origin gh-pages
