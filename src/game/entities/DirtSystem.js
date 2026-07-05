@@ -239,6 +239,23 @@ export class DirtSystem {
         drawFallback(ctx, d);
       }
       ctx.restore();
+      // fresh poop steams gently (fades as it, er, matures)
+      if (d.type === 'poop' && d.age < 8) {
+        const fade = 1 - d.age / 8;
+        ctx.strokeStyle = `rgba(180, 170, 160, ${0.35 * fade})`;
+        ctx.lineWidth = 2.5;
+        ctx.lineCap = 'round';
+        for (const off of [-8, 6]) {
+          const ph = d.wobble * 2 + off;
+          ctx.beginPath();
+          ctx.moveTo(d.x + off, d.y - 18);
+          ctx.quadraticCurveTo(
+            d.x + off + Math.sin(ph) * 6, d.y - 30,
+            d.x + off + Math.sin(ph + 1) * 8, d.y - 42 - fade * 4
+          );
+          ctx.stroke();
+        }
+      }
       // soft contact shadow while dropping
       if (d.drop > 0) {
         ctx.fillStyle = 'rgba(90,50,30,0.15)';
@@ -264,6 +281,7 @@ function sizeFor(type) {
     case 'sock': return 62;
     case 'toy_ball': return 56;
     case 'toy_block': return 50;
+    case 'poop': return 54;
     default: return 44;
   }
 }
@@ -390,6 +408,28 @@ function drawFallback(ctx, d) {
       ctx.fill();
       ctx.fillStyle = 'rgba(255,255,255,0.5)';
       starPath(ctx, 0, 0, 5, 12, 5.5);
+      ctx.fill();
+      break;
+    }
+    case 'poop': {
+      // the classic swirl
+      ctx.fillStyle = '#7a4a26';
+      for (const [w, h, y] of [[24, 12, 8], [18, 10, -1], [11, 8, -9]]) {
+        ctx.beginPath();
+        ctx.ellipse(0, y, w, h, 0, 0, TAU);
+        ctx.fill();
+      }
+      // curled tip
+      ctx.strokeStyle = '#7a4a26';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(3, -14, 4, Math.PI, TAU * 0.9);
+      ctx.stroke();
+      // glossy highlight
+      ctx.fillStyle = 'rgba(255, 230, 200, 0.3)';
+      ctx.beginPath();
+      ctx.ellipse(-7, -2, 5, 3, 0.5, 0, TAU);
       ctx.fill();
       break;
     }

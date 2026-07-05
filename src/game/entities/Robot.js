@@ -43,6 +43,12 @@ export class Robot {
     this.backupBeepT = 0;
     this.seekT = 0;
 
+    // the poopocalypse
+    this.smearT = 0; // seconds of oblivious mess-spreading left
+    this.smearDist = 0;
+    this.mopMode = false;
+    this.fateTarget = null; // disguised waypoint that leads through... something
+
     // visuals
     this.z = 0;
     this.vz = 0;
@@ -350,6 +356,25 @@ export class Robot {
       }
     }
 
+    // dirty wheels stamp smears along both wheel tracks while oblivious
+    if (this.smearT > 0) {
+      this.smearT -= dt;
+      const sp = Math.abs(this.speed);
+      if (sp > 20 && this.z <= 0) {
+        this.smearDist += sp * dt;
+        if (this.smearDist > 24) {
+          this.smearDist = 0;
+          const px = Math.cos(this.heading + Math.PI / 2);
+          const py = Math.sin(this.heading + Math.PI / 2);
+          for (const side of [-1, 1]) {
+            g.smears.stamp(this.x + px * 30 * side, this.y + py * 30 * side, this.heading);
+          }
+          if (chance(0.2)) g.smears.stamp(this.x + rand(-16, 16), this.y + rand(-16, 16), this.heading);
+        }
+      }
+      if (this.smearT <= 0) g.pendingMop = true; // the awful realization comes next
+    }
+
     // trail recording
     if (this.trailMode) {
       this.trailT -= dt;
@@ -359,9 +384,10 @@ export class Robot {
         this.rainbowHue = (this.rainbowHue + 9) % 360;
       }
     }
+    const trailLife = this.trailMode === 'turbo' ? 0.5 : this.trailMode === 'mop' ? 0.9 : 1.6;
     for (let i = this.trail.length - 1; i >= 0; i--) {
       this.trail[i].age += dt;
-      if (this.trail[i].age > (this.trailMode === 'turbo' ? 0.5 : 1.6)) this.trail.splice(i, 1);
+      if (this.trail[i].age > trailLife) this.trail.splice(i, 1);
     }
 
     // stuck detection for nav states (incl. actions driving via driveTo)
@@ -532,6 +558,14 @@ export class Robot {
 
   updateClean(dt) {
     const g = this.game;
+    // "fate" waypoint: looks like ordinary cleaning, happens to pass through
+    // whatever the dog left on the floor
+    if (this.fateTarget) {
+      if (this.driveTo(this.fateTarget.x, this.fateTarget.y, 145, 30)) {
+        this.fateTarget = null;
+      }
+      return;
+    }
     // pause-and-look-around moments
     if (this.pauseT > 0) {
       this.pauseT -= dt;
@@ -653,10 +687,10 @@ export class Robot {
           this.setExpr('dizzy', 1);
           g.sound.questionBeep();
         }
-        // bumping the cat!
-        const cat = g.cat;
-        if (cat && dist(this.x, this.y, cat.x, cat.y) < R + 55 && cat.state !== 'ride') {
-          cat.startle();
+        // bumping the dog!
+        const dog = g.dog;
+        if (dog && dist(this.x, this.y, dog.x, dog.y) < R + 55 && dog.state !== 'ride') {
+          dog.startle();
         }
       }
     } else if (['seek', 'godock', 'leaving', 'action'].includes(this.state)) {
@@ -702,6 +736,20 @@ export class Robot {
         const a = clamp(1 - p.age / 1.6, 0, 1);
         ctx.strokeStyle = `hsla(${p.hue}, 85%, 62%, ${a * 0.85})`;
         ctx.lineWidth = 34 * a + 6;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(q.x, q.y);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+      }
+    } else if (this.trailMode === 'mop') {
+      // glistening freshly-mopped streak
+      for (let i = 1; i < this.trail.length; i++) {
+        const p = this.trail[i];
+        const q = this.trail[i - 1];
+        const a = clamp(1 - p.age / 0.9, 0, 1);
+        ctx.strokeStyle = `rgba(160, 220, 255, ${a * 0.35})`;
+        ctx.lineWidth = 52 * a + 4;
         ctx.lineCap = 'round';
         ctx.beginPath();
         ctx.moveTo(q.x, q.y);
@@ -771,6 +819,7 @@ export class Robot {
       this.drawBody(ctx);
     }
 
+    if (this.mopMode) this.drawMopPad(ctx);
     this.drawFaceAndLights(ctx);
     ctx.restore();
 
@@ -790,6 +839,25 @@ export class Robot {
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  drawMopPad(ctx) {
+    // deployed mop pad at the rear, glistening wet
+    const y0 = R * 0.44;
+    const h = R * 0.44;
+    ctx.fillStyle = '#cfeaff';
+    roundRect(ctx, -36, y0, 72, h, 11);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(90, 165, 225, 0.55)';
+    for (let i = 0; i < 3; i++) {
+      roundRect(ctx, -29 + i * 22, y0 + 5, 12, h - 10, 5);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 0.45 + 0.3 * Math.sin(this.wobbleT * 6);
+    ctx.fillStyle = '#ffffff';
+    roundRect(ctx, -30, y0 + 3, 60, 5, 2.5);
+    ctx.fill();
+    ctx.globalAlpha = 1;
   }
 
   drawBrush(ctx, bx, by) {
@@ -877,7 +945,8 @@ export class Robot {
     ctx.arc(0, -2, 25, 0, TAU);
     ctx.fill();
     const ringColor =
-      this.state === 'charge' ? '#7ef29d'
+      this.mopMode ? '#48b6ff'
+      : this.state === 'charge' ? '#7ef29d'
       : this.bin > 0.88 ? '#ffb42e'
       : this.state === 'action' ? '#ff5d8f'
       : '#4cc9f0';

@@ -1,12 +1,13 @@
 // Game: owns the world, update/draw pipeline, y-sorted rendering and input.
-import { TAU, clamp, lerp, rand, pick, chance, dist, damp } from './core/math.js';
+import { TAU, clamp, lerp, rand, pick, chance, dist, damp, angleTo } from './core/math.js';
 import { SoundEngine } from './core/SoundEngine.js';
 import { Particles } from './fx/Particles.js';
+import { Smears } from './fx/Smears.js';
 import { Room, WORLD_W, WORLD_H, roundRect } from './world/Room.js';
 import { Dock } from './entities/Dock.js';
 import { Robot } from './entities/Robot.js';
 import { DirtSystem } from './entities/DirtSystem.js';
-import { Cat } from './entities/Cat.js';
+import { Dog } from './entities/Dog.js';
 import { Ambience } from './entities/Ambience.js';
 import { Hud } from './ui/Hud.js';
 import { ActionRegistry } from './actions/ActionRegistry.js';
@@ -19,12 +20,14 @@ export class Game {
     this.assets = assets;
     this.sound = new SoundEngine();
     this.particles = new Particles();
+    this.smears = new Smears(this);
     this.room = new Room(this);
     this.dock = new Dock(this);
     this.robot = new Robot(this);
     this.dirt = new DirtSystem(this);
-    this.cat = new Cat(this);
+    this.dog = new Dog(this);
     this.ambience = new Ambience(this);
+    this.pendingMop = false;
     this.hud = new Hud(this);
     this.actions = new ActionRegistry(this);
     registerDefaultActions(this.actions);
@@ -99,6 +102,17 @@ export class Game {
 
   shake(amt) {
     this.shakeAmt = Math.max(this.shakeAmt, amt);
+  }
+
+  // is a potty disaster anywhere in progress?
+  messActive() {
+    return this.pendingMop ||
+      this.robot.smearT > 0 ||
+      this.robot.mopMode ||
+      this.smears.count > 0 ||
+      this.actions.current?.name === 'mopMode' ||
+      this.dog.pooping() ||
+      this.dirt.items.some((d) => d.type === 'poop');
   }
 
   // ---- the sock stash -------------------------------------------------------
@@ -316,9 +330,9 @@ export class Game {
       this.tapRobot();
       return;
     }
-    // 4. the cat
-    if (this.cat.contains(x, y)) {
-      this.cat.onTap();
+    // 4. the dog
+    if (this.dog.contains(x, y)) {
+      this.dog.onTap();
       return;
     }
     // 5. the dock — summon the robot home
@@ -390,8 +404,8 @@ export class Game {
       return;
     }
     if (hit === 'catbed') {
-      if (dist(this.cat.x, this.cat.y, this.room.furniture[4].cx, this.room.furniture[4].cy) < 120) {
-        this.cat.onTap();
+      if (dist(this.dog.x, this.dog.y, this.room.furniture[4].cx, this.room.furniture[4].cy) < 120) {
+        this.dog.onTap();
       } else {
         this.sound.squeak();
       }
@@ -456,9 +470,10 @@ export class Game {
     this.dock.update(dt);
     this.robot.update(dt);
     this.dirt.update(dt);
-    this.cat.update(dt);
+    this.dog.update(dt);
     this.actions.update(dt);
     this.particles.update(dt);
+    this.smears.update(dt);
     this.hud.update(dt);
     this.dim = damp(this.dim, this.dimTarget, 4, dt);
 
@@ -470,6 +485,58 @@ export class Game {
           this.dirt.items.some((d) => d.type === 'sock')) {
         this.actions.triggerByName('sockGrab');
       }
+    }
+
+    // ---- the poopocalypse pipeline ----------------------------------------
+    // 1. the robot blunders into a fresh pile (it has no idea)
+    const r0 = this.robot;
+    if (r0.smearT <= 0 && !r0.mopMode && r0.z <= 0 && Math.abs(r0.speed) > 25) {
+      for (const d of this.dirt.items) {
+        if (d.type !== 'poop' || d.drop > 0) continue;
+        if (dist(d.x, d.y, r0.x, r0.y) < r0.radius * 0.85) {
+          this.dirt.remove(d);
+          this.smears.splat(d.x, d.y);
+          r0.smearT = 5.2; // blissfully spreading it for a while
+          r0.smearDist = 20;
+          r0.fateTarget = null;
+          this.sound.splat();
+          this.shake(4);
+          this.particles.dustPuff(d.x, d.y, 8, 'rgba(150, 110, 70, 0.5)');
+          break;
+        }
+      }
+    }
+    // 2. the awful realization → forced mop mode (also mops leftovers)
+    if (this.pendingMop || (this.smears.count > 0 && !r0.mopMode && r0.smearT <= 0)) {
+      const dockStates = ['align', 'empty', 'charge', 'docked'];
+      if (!dockStates.includes(r0.state) && this.actions.current?.name !== 'mopMode') {
+        this.pendingMop = false;
+        this.actions.force('mopMode');
+      }
+    }
+    // 3. fate: a fresh pile quietly bends the robot's cleaning path toward it
+    this.fateT = (this.fateT ?? 3) - dt;
+    if (this.fateT <= 0) {
+      this.fateT = 2.5;
+      const pile = this.dirt.items.find((d) => d.type === 'poop' && d.age > 4 && !d.fated);
+      if (pile && !this.actions.busy && ['clean', 'seek'].includes(r0.state) &&
+          !r0.stayDocked && r0.smearT <= 0) {
+        pile.fated = true;
+        const a = angleTo(r0.x, r0.y, pile.x, pile.y);
+        const fx = pile.x + Math.cos(a) * 150;
+        const fy = pile.y + Math.sin(a) * 150;
+        r0.fateTarget = this.room.isFree(fx, fy, 60) ? { x: fx, y: fy } : { x: pile.x, y: pile.y };
+        r0.state = 'clean';
+        r0.seekDirt = null;
+        r0.bump = null;
+        r0.cleanMode = 'wander';
+      }
+    }
+    // 4. and sometimes the dog just... decides. all on its own.
+    this.pottyT = (this.pottyT ?? rand(110, 190)) - dt;
+    if (this.pottyT <= 0) {
+      this.pottyT = rand(140, 240);
+      if (!this.messActive()) this.dog.startPottyRun();
     }
 
     // stray toys get tidied back into the toybox by the arm too
@@ -488,7 +555,7 @@ export class Game {
       this.autoEventT = rand(50, 90);
       const idle = this.time - (this.lastInteraction ?? 0) > 20;
       if (idle && !this.actions.busy && this.robot.state === 'clean') {
-        this.actions.triggerByName(pick(['sneeze', 'happyBeeps', 'catRide', 'bounceParty', 'spinDance', 'tidyToy']));
+        this.actions.triggerByName(pick(['sneeze', 'happyBeeps', 'dogRide', 'bounceParty', 'spinDance', 'tidyToy']));
       }
     }
     if (this.shakeAmt > 0) this.shakeAmt = Math.max(0, this.shakeAmt - 14 * dt);
@@ -546,6 +613,7 @@ export class Game {
     this.room.drawBase(ctx, this.assets);
     this.ambience.draw(ctx);
     this.room.drawTV(ctx);
+    this.smears.draw(ctx); // floor stains sit under everything that moves
     this.robot.drawTrail(ctx);
     this.dirt.draw(ctx, this.assets);
     this.actions.drawUnder(ctx);
@@ -575,7 +643,7 @@ export class Game {
         if (this.hatTime > 0) this.drawHat(ctx);
       },
     });
-    entries.push({ baseline: this.cat.baseline, draw: () => this.cat.draw(ctx, this.assets) });
+    entries.push({ baseline: this.dog.baseline, draw: () => this.dog.draw(ctx, this.assets) });
     entries.sort((a, b) => a.baseline - b.baseline);
     for (const e of entries) e.draw();
 

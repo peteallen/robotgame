@@ -1,6 +1,8 @@
 // All game audio is synthesized live with WebAudio — perfect for robot beeps,
 // vacuum hums and toddler-friendly squeaks. No audio files needed.
-import { rand, pick, clamp } from './math.js';
+import { rand, pick, clamp, chance } from './math.js';
+
+const chanceHelper = () => chance(0.5);
 
 export class SoundEngine {
   constructor() {
@@ -253,6 +255,68 @@ export class SoundEngine {
     const f = rand(500, 640);
     this.tone({ freq: f * 0.7, end: f * 1.5, dur: 0.18, type: 'sawtooth', vol: 0.07, curve: 'lin' });
     this.tone({ freq: f * 1.5, end: f * 0.75, dur: 0.4, type: 'sawtooth', vol: 0.09, delay: 0.16, curve: 'lin' });
+  }
+
+  bark() {
+    // cheerful cartoon "arf arf!"
+    const f = rand(200, 260);
+    for (const d of [0, 0.16]) {
+      this.tone({ freq: f * 1.8, end: f, dur: 0.09, type: 'sawtooth', vol: 0.14, delay: d, curve: 'lin' });
+      this.noise({ dur: 0.07, vol: 0.12, from: 900, to: 350, q: 1.4, delay: d });
+    }
+  }
+
+  yelp() {
+    this.tone({ freq: 480, end: 950, dur: 0.13, type: 'sawtooth', vol: 0.12 });
+    this.noise({ dur: 0.08, vol: 0.08, from: 1200, to: 2200, delay: 0.02 });
+  }
+
+  sniff() {
+    this.noise({ dur: 0.09, vol: 0.09, from: 1400, to: 2600, q: 1.6 });
+    this.noise({ dur: 0.09, vol: 0.09, from: 1400, to: 2600, q: 1.6, delay: 0.14 });
+  }
+
+  strain() {
+    // comedic concentration
+    this.tone({ freq: 200, end: 150, dur: 0.5, type: 'sawtooth', vol: 0.05, curve: 'lin' });
+    this.tone({ freq: 300, end: 340, dur: 0.5, type: 'triangle', vol: 0.05, delay: 0.55, curve: 'lin' });
+  }
+
+  plop() {
+    this.tone({ freq: 320, end: 70, dur: 0.14, type: 'sine', vol: 0.3 });
+    this.noise({ dur: 0.1, vol: 0.14, from: 500, to: 150, q: 1, delay: 0.03 });
+    this.tone({ freq: 200, end: 60, dur: 0.1, type: 'sine', vol: 0.18, delay: 0.12 });
+  }
+
+  splat() {
+    // the terrible moment
+    this.noise({ dur: 0.22, vol: 0.45, from: 700, to: 140, q: 0.8 });
+    this.tone({ freq: 130, end: 50, dur: 0.2, type: 'sine', vol: 0.32 });
+    this.noise({ dur: 0.14, vol: 0.2, from: 300, to: 90, q: 2, delay: 0.05 });
+  }
+
+  squelch() {
+    this.noise({ dur: 0.16, vol: 0.2, from: 500, to: 150, q: 1.6 });
+    this.tone({ freq: 240, end: 90, dur: 0.15, type: 'sine', vol: 0.14 });
+  }
+
+  alarm() {
+    // uh-oh! sensor alarm
+    [0, 0.18, 0.36].forEach((d, i) => {
+      this.tone({ freq: i === 2 ? 1480 : 990, dur: 0.13, type: 'square', vol: 0.12, delay: d });
+    });
+  }
+
+  mopJingle() {
+    [392, 494, 587, 784].forEach((f, i) => {
+      this.tone({ freq: f, dur: 0.14, type: 'triangle', vol: 0.14, delay: i * 0.09 });
+    });
+    this.noise({ dur: 0.3, vol: 0.08, from: 2000, to: 4000, delay: 0.36 });
+  }
+
+  squeegee() {
+    const up = chanceHelper();
+    this.noise({ dur: 0.3, vol: 0.1, from: up ? 500 : 1500, to: up ? 1500 : 500, q: 3 });
   }
 
   purr(dur = 1.2) {

@@ -40,6 +40,18 @@ export class ActionRegistry {
     return true;
   }
 
+  // emergency override: cancel whatever is running and start this action
+  force(name) {
+    const a = this.actions.find((x) => x.name === name);
+    if (!a) return false;
+    if (this.current) {
+      this.current.end?.(this.game);
+      this.current = null;
+    }
+    this.begin(a);
+    return true;
+  }
+
   trigger() {
     const g = this.game;
     if (this.current || this.cooldown > 0) return false;

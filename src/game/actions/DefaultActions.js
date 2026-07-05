@@ -11,13 +11,14 @@ export function registerDefaultActions(reg) {
   reg.register(DiscoMode);
   reg.register(SockGrab);
   reg.register(TidyToy);
-  reg.register(CatRide);
+  reg.register(DogRide);
   reg.register(HappyBeeps);
   reg.register(Fireworks);
   reg.register(Sneeze);
   reg.register(BounceParty);
   reg.register(HoverMode);
   reg.register(UnderCouch);
+  reg.register(MopMode);
 }
 
 // ---------------------------------------------------------------- spin dance
@@ -511,6 +512,13 @@ const SockGrab = {
       y: lerp(r.y - 20, st.arm.ty, reach),
     };
   },
+  end(g) {
+    // interrupted mid-carry (mop emergency!): drop the sock right here
+    const st = this.state;
+    if (st?.arm?.holding && !st.released) {
+      g.dirt.spawn('sock', g.robot.x, clamp(g.robot.y + 46, g.room.bounds.minY, g.room.bounds.maxY + 30), { tint: st.sock.tint });
+    }
+  },
   drawOver(g, ctx) {
     const st = this.state;
     const r = g.robot;
@@ -699,6 +707,15 @@ const TidyToy = {
       y: lerp(r.y - 20, st.arm.ty, st.arm.ext),
     };
   },
+  end(g) {
+    // interrupted while holding a toy: it tumbles to the floor
+    const st = this.state;
+    if (st?.held) {
+      const t = g.dirt.spawn(st.held.type, g.robot.x, g.robot.y + 40, { tint: st.held.tint });
+      t.vx = rand(-70, 70);
+      t.vy = rand(30, 90);
+    }
+  },
   drawOver(g, ctx) {
     const st = this.state;
     if (!st.arm) return;
@@ -771,41 +788,171 @@ function drawArm(ctx, baseX, baseY, cx, cy, ext, claw) {
   }
 }
 
-// ------------------------------------------------------------------ cat ride
-const CatRide = {
-  name: 'catRide',
+// ------------------------------------------------------------------ dog ride
+const DogRide = {
+  name: 'dogRide',
   weight: 8,
   maxDur: 11,
-  canRun: (g) => g.cat.state !== 'ride' && g.cat.state !== 'startle',
+  canRun: (g) => g.dog.state !== 'ride' && g.dog.state !== 'startle' && !g.dog.pooping(),
   start(g) {
-    g.cat.hurry = true;
-    g.cat.beginWalk({ x: g.robot.x, y: g.robot.y });
-    g.sound.meow();
+    g.dog.hurry = true;
+    g.dog.beginWalk({ x: g.robot.x, y: g.robot.y });
+    g.sound.bark();
     g.robot.setExpr('happy', 4);
     this.state.mounted = false;
   },
   update(g, dt) {
     const r = g.robot;
-    const cat = g.cat;
+    const dog = g.dog;
     if (!this.state.mounted) {
       // they roll/run to meet each other!
-      r.driveTo(cat.x, cat.y, 110, 85);
-      cat.target = { x: r.x, y: r.y };
-      cat.state = 'walk';
-      if (dist(cat.x, cat.y, r.x, r.y) < 95) {
-        cat.tryRide();
+      r.driveTo(dog.x, dog.y, 110, 85);
+      dog.target = { x: r.x, y: r.y };
+      dog.state = 'walk';
+      if (dist(dog.x, dog.y, r.x, r.y) < 95) {
+        dog.tryRide();
         this.state.mounted = true;
         g.particles.hearts(r.x, r.y - 60, 4);
-        g.sound.purr(1.2);
+        g.sound.bark();
       }
       if (this.elapsed > 9 && !this.state.mounted) this.finished = true;
     } else {
-      // hand control back — the cat stays on for a while ambient-style
+      // hand control back — the dog stays on for a while ambient-style
       this.finished = true;
     }
   },
   end(g) {
-    g.cat.hurry = false;
+    g.dog.hurry = false;
+  },
+};
+
+// ---------------------------------------------- mop emergency (poopocalypse)
+// Never picked randomly — the game FORCES it once the robot realizes what it
+// has been driving through.
+const MopMode = {
+  name: 'mopMode',
+  weight: 0,
+  canRun: () => false,
+  maxDur: 55,
+  start(g) {
+    const r = g.robot;
+    this.state = { phase: 'notice', t: 0, sprayT: 0, squeegeeT: 0 };
+    r.targetSpeed = 0;
+    r.setExpr('dizzy', 2.2);
+    g.sound.alarm();
+    g.shake(3);
+  },
+  update(g, dt) {
+    const r = g.robot;
+    const st = this.state;
+    st.t += dt;
+    switch (st.phase) {
+      case 'notice': {
+        // the horrified realization
+        r.targetSpeed = 0;
+        r.spinExtra = Math.sin(st.t * 24) * 0.05;
+        if (st.t > 1.6) {
+          st.phase = 'transform';
+          st.t = 0;
+          r.spinExtra = 0;
+          g.sound.mopJingle();
+        }
+        break;
+      }
+      case 'transform': {
+        // vacuum -> mop: a quick flourish and the pad deploys
+        r.targetSpeed = 0;
+        r.spinExtra += dt * 7.5;
+        if (st.t > 0.85) {
+          r.spinExtra = 0;
+          r.mopMode = true;
+          r.trailMode = 'mop';
+          st.phase = 'mop';
+          st.t = 0;
+          r.setExpr('determined', 3);
+          g.sound.happyBeeps(2);
+          g.particles.burst(r.x, r.y - 30, 'dot', 12, {
+            colors: ['#8fd7ff', '#d6f4ff', '#ffffff'],
+            speedMin: 60, speedMax: 180, lifeMin: 0.4, lifeMax: 0.8, gravity: 240,
+          });
+        }
+        break;
+      }
+      case 'mop': {
+        const pile = g.dirt.find((d) => d.type === 'poop');
+        const smear = g.smears.nearest(r.x, r.y);
+        const target = smear || pile;
+        if (!target) {
+          st.phase = 'victory';
+          st.t = 0;
+          r.targetSpeed = 0;
+          g.sound.tada();
+          g.particles.confettiBurst(r.x, r.y - 30, 26);
+          break;
+        }
+        r.driveTo(target.x, target.y, 165, 26);
+        break;
+      }
+      case 'victory': {
+        r.targetSpeed = 0;
+        r.spinExtra += dt * 6 * Math.max(0, 1 - st.t);
+        if (st.t > 1.3) this.finished = true;
+        break;
+      }
+    }
+    // the pad wipes whatever it passes over
+    if (r.mopMode) {
+      const wiped = g.smears.wipeAt(r.x, r.y, 64);
+      if (wiped > 0) {
+        st.squeegeeT -= dt;
+        if (st.squeegeeT <= 0) {
+          st.squeegeeT = 0.28;
+          g.sound.squeegee();
+        }
+        for (let i = 0; i < Math.min(wiped, 3); i++) {
+          g.particles.add({
+            x: r.x + rand(-30, 30), y: r.y + rand(0, 34),
+            kind: 'bubble', size: rand(5, 10), life: rand(0.4, 0.8),
+            vy: rand(-40, -12), vx: rand(-16, 16),
+          });
+        }
+      }
+      // rolling over a remaining pile in mop mode cleans it whole
+      const pile = g.dirt.find((d) => d.type === 'poop' && dist(d.x, d.y, r.x, r.y) < r.radius + 14);
+      if (pile) {
+        g.dirt.remove(pile);
+        g.sound.squelch();
+        g.particles.dustPuff(pile.x, pile.y, 8, 'rgba(150, 110, 70, 0.45)');
+        for (let i = 0; i < 8; i++) {
+          g.particles.add({
+            x: pile.x + rand(-20, 20), y: pile.y + rand(-14, 14),
+            kind: 'bubble', size: rand(6, 12), life: rand(0.5, 1), vy: rand(-50, -20),
+          });
+        }
+      }
+      // fine water mist behind while moving
+      st.sprayT -= dt;
+      if (st.sprayT <= 0 && Math.abs(r.speed) > 30) {
+        st.sprayT = 0.1;
+        const bx = r.x - Math.cos(r.heading) * 40;
+        const by = r.y - Math.sin(r.heading) * 40;
+        g.particles.add({
+          x: bx + rand(-22, 22), y: by + rand(-10, 10),
+          kind: 'dot', color: 'rgba(120, 200, 255, 0.7)',
+          size: rand(3, 5), life: rand(0.3, 0.55),
+          vy: rand(-15, 10), vx: rand(-14, 14),
+        });
+      }
+    }
+  },
+  end(g) {
+    const r = g.robot;
+    r.mopMode = false;
+    if (r.trailMode === 'mop') r.trailMode = null;
+    r.spinExtra = 0;
+    r.setExpr('love', 2);
+    g.sound.fanfare();
+    g.particles.sparkle(r.x, r.y - 40, 14);
   },
 };
 
