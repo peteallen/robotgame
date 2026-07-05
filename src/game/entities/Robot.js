@@ -224,6 +224,7 @@ export class Robot {
 
   notifyNewDirt(d) {
     if (this.controlled) return;
+    if (!this.game.modeHasVac()) return; // mop-only: crumbs aren't its job
     if (this.state === 'clean' || this.state === 'seek') {
       this.seekDirt = d;
       this.seekT = 0;
@@ -339,9 +340,9 @@ export class Robot {
       }
     }
 
-    // suction (a truly full bin can't hold any more)
+    // suction (a truly full bin can't hold any more; mop-only never vacuums)
     this.suctionOn = (['clean', 'seek', 'leaving'].includes(this.state) ||
-      (this.state === 'action' && this.actionSuction === true)) && this.bin < 0.999;
+      (this.state === 'action' && this.actionSuction === true)) && this.bin < 0.999 && g.modeHasVac();
     if (this.suctionOn && Math.abs(this.speed) > 10) {
       g.dirt.trySuck(this);
     }
@@ -631,18 +632,20 @@ export class Robot {
       }
     }
 
-    // chance to notice dirt nearby
+    // chance to notice dirt nearby (mop-only ignores vacuumable dirt)
     this.seekCheckT -= dt;
     if (this.seekCheckT <= 0) {
       this.seekCheckT = 1.4;
-      const player = g.dirt.nearestVac(this.x, this.y, true);
-      const target = player || g.dirt.nearestVac(this.x, this.y);
-      if (target) {
-        const d = dist(this.x, this.y, target.x, target.y);
-        if (player || (d < 460 && chance(0.55))) {
-          this.seekDirt = target;
-          this.state = 'seek';
-          return;
+      if (g.modeHasVac()) {
+        const player = g.dirt.nearestVac(this.x, this.y, true);
+        const target = player || g.dirt.nearestVac(this.x, this.y);
+        if (target) {
+          const d = dist(this.x, this.y, target.x, target.y);
+          if (player || (d < 460 && chance(0.55))) {
+            this.seekDirt = target;
+            this.state = 'seek';
+            return;
+          }
         }
       }
     }
@@ -893,13 +896,23 @@ export class Robot {
   }
 
   drawMopPad(ctx) {
-    // deployed mop pad at the rear, glistening wet
+    // deployed mop pad at the rear — clean blue when fresh, grubby as it soils
     const y0 = R * 0.44;
     const h = R * 0.44;
-    ctx.fillStyle = '#cfeaff';
+    const dirt = clamp((this.game.mopDirt ?? 0) * 0.75, 0, 1);
+    // base: #cfeaff (207,234,255) -> grubby #a98b5f (169,139,95)
+    const br = Math.round(lerp(207, 169, dirt));
+    const bg = Math.round(lerp(234, 139, dirt));
+    const bb = Math.round(lerp(255, 95, dirt));
+    ctx.fillStyle = `rgb(${br}, ${bg}, ${bb})`;
     roundRect(ctx, -36, y0, 72, h, 11);
     ctx.fill();
-    ctx.fillStyle = 'rgba(90, 165, 225, 0.55)';
+    // stripes: rgba(90,165,225,0.55) -> grubby rgba(122,90,56,0.6)
+    const sr = Math.round(lerp(90, 122, dirt));
+    const sg = Math.round(lerp(165, 90, dirt));
+    const sb = Math.round(lerp(225, 56, dirt));
+    const sa = lerp(0.55, 0.6, dirt);
+    ctx.fillStyle = `rgba(${sr}, ${sg}, ${sb}, ${sa})`;
     for (let i = 0; i < 3; i++) {
       roundRect(ctx, -29 + i * 22, y0 + 5, 12, h - 10, 5);
       ctx.fill();

@@ -353,6 +353,28 @@ export class SoundEngine {
     this.noise({ dur: 0.5, vol: 0.1, from: 1300, to: 450, q: 1.1, delay: 0.45 });
   }
 
+  mechWhirr(dur = 0.8) {
+    // little servo motor working
+    this.tone({ freq: 210, end: 340, dur, type: 'sawtooth', vol: 0.06, curve: 'lin' });
+    this.tone({ freq: 420, end: 660, dur, type: 'square', vol: 0.03, curve: 'lin' });
+    this.noise({ dur, vol: 0.04, from: 900, to: 1400, q: 2 });
+  }
+
+  padClick() {
+    this.tone({ freq: 480, dur: 0.04, type: 'square', vol: 0.14 });
+    this.tone({ freq: 170, end: 120, dur: 0.08, type: 'sine', vol: 0.28, delay: 0.03 });
+    this.noise({ dur: 0.05, vol: 0.1, from: 1800, to: 900, delay: 0.02 });
+  }
+
+  sprayHiss(dur = 0.4) {
+    this.noise({ dur, vol: 0.14, from: 3200, to: 5200, q: 0.8 });
+  }
+
+  scrubStroke() {
+    const up = chanceHelper();
+    this.noise({ dur: 0.22, vol: 0.14, from: up ? 700 : 1800, to: up ? 1800 : 700, q: 2.2 });
+  }
+
   purr(dur = 1.2) {
     if (!this.ctx) return;
     const t0 = this.ctx.currentTime;

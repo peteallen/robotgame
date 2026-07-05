@@ -4,6 +4,7 @@ import { SoundEngine } from './core/SoundEngine.js';
 import { Voice } from './core/Voice.js';
 import { Particles } from './fx/Particles.js';
 import { Smears } from './fx/Smears.js';
+import { Cutaway } from './fx/Cutaway.js';
 import { Room, WORLD_W, WORLD_H, roundRect } from './world/Room.js';
 import { Dock } from './entities/Dock.js';
 import { Robot } from './entities/Robot.js';
@@ -29,7 +30,12 @@ export class Game {
     this.dirt = new DirtSystem(this);
     this.dog = new Dog(this);
     this.ambience = new Ambience(this);
+    this.cutaway = new Cutaway(this);
     this.pendingMop = false;
+
+    // cleaning mode the PLAYER chose: 'vac' | 'mop' | 'both'
+    this.userMode = this.loadMode();
+    this.mopDirt = 0; // pads get dirty while mopping; 1 = needs a wash
     this.hud = new Hud(this);
     this.actions = new ActionRegistry(this);
     registerDefaultActions(this.actions);
@@ -108,6 +114,39 @@ export class Game {
 
   say(name, opts) {
     this.voice.say(name, opts);
+  }
+
+  // ---- cleaning modes -------------------------------------------------------
+
+  loadMode() {
+    try {
+      const m = localStorage.getItem('robo_mode');
+      if (m === 'vac' || m === 'mop' || m === 'both') return m;
+    } catch (e) { /* default */ }
+    return 'vac';
+  }
+
+  modeNeedsPads() {
+    return this.userMode !== 'vac';
+  }
+
+  modeHasVac() {
+    return this.userMode !== 'mop';
+  }
+
+  requestMode(mode) {
+    if (mode === this.userMode) {
+      this.sound.pop();
+      return;
+    }
+    this.userMode = mode;
+    try {
+      localStorage.setItem('robo_mode', mode);
+    } catch (e) { /* session only */ }
+    this.sound.ackBeep();
+    this.lastInteraction = this.time;
+    // the equipment watchdog notices the mismatch and sends the robot to the
+    // dock with the right announcement
   }
 
   // player just serviced a dock tank
@@ -499,6 +538,7 @@ export class Game {
     this.actions.update(dt);
     this.particles.update(dt);
     this.smears.update(dt);
+    this.cutaway.update(dt);
     this.hud.update(dt);
     this.dim = damp(this.dim, this.dimTarget, 4, dt);
 
@@ -544,6 +584,54 @@ export class Game {
         this.pendingMop = false;
       }
     }
+    // ambient mopping: pads wipe whatever they pass over (not while the robot
+    // is busy spreading a fresh disaster) + pads get dirty + wet trail
+    if (r0.mopMode) {
+      if (Math.abs(r0.speed) > 25) {
+        this.mopDirt = clamp(this.mopDirt + dt / 55, 0, 1);
+        if (!r0.trailMode) r0.trailMode = 'mop';
+      }
+      if (r0.smearT <= 0) {
+        const wiped = this.smears.wipeAt(r0.x, r0.y, 64);
+        if (wiped > 0) {
+          this.mopDirt = clamp(this.mopDirt + wiped * 0.02, 0, 1);
+          this.squeegeeT = (this.squeegeeT ?? 0) - dt;
+          if (this.squeegeeT <= 0) {
+            this.squeegeeT = 0.28;
+            this.sound.squeegee();
+          }
+          for (let i = 0; i < Math.min(wiped, 3); i++) {
+            this.particles.add({
+              x: r0.x + rand(-30, 30), y: r0.y + rand(0, 34),
+              kind: 'bubble', size: rand(5, 10), life: rand(0.4, 0.8),
+              vy: rand(-40, -12), vx: rand(-16, 16),
+            });
+          }
+        }
+        // rolling over a pile with pads on mops it up whole
+        const pile = this.dirt.items.find((d) => d.type === 'poop' && dist(d.x, d.y, r0.x, r0.y) < r0.radius + 14);
+        if (pile) {
+          this.dirt.remove(pile);
+          this.mopDirt = clamp(this.mopDirt + 0.5, 0, 1);
+          this.sound.squelch();
+          this.particles.dustPuff(pile.x, pile.y, 8, 'rgba(150, 110, 70, 0.45)');
+        }
+      }
+    } else if (r0.trailMode === 'mop') {
+      r0.trailMode = null;
+    }
+
+    // pads dirty → wash trip; player-chosen mode mismatch → equipment trip
+    const idleEnough = !this.actions.busy && ['clean', 'seek'].includes(r0.state) &&
+      !r0.stayDocked && r0.smearT <= 0 && this.smears.count === 0 && !this.pendingMop;
+    if (idleEnough) {
+      if (r0.mopMode && this.mopDirt >= 1) {
+        this.actions.force('washTrip');
+      } else if (r0.mopMode !== this.modeNeedsPads()) {
+        this.actions.force('modeSwitch');
+      }
+    }
+
     // gentle reminder while anything on the dock needs a human
     if (this.dock.anyAlert()) {
       this.alertRemindT = (this.alertRemindT ?? 20) - dt;
@@ -698,6 +786,7 @@ export class Game {
 
     this.actions.drawOver(ctx);
     this.particles.draw(ctx);
+    this.cutaway.draw(ctx);
 
     // sock riding the finger
     if (this.dragSock) {

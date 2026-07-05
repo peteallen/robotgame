@@ -5,7 +5,7 @@ import { publicAssetUrl } from './assetUrl.js';
 const LINES = [
   'start_clean', 'go_charge', 'charge_done', 'go_empty', 'emptying', 'go_dock',
   'uh_oh', 'go_mop_install', 'mop_installed', 'go_mop_wash', 'washing',
-  'mop_done', 'bag_full', 'clean_empty', 'dirty_full', 'thank_you',
+  'mop_done', 'remove_pads', 'bag_full', 'clean_empty', 'dirty_full', 'thank_you',
 ];
 
 // nag lines get a longer minimum gap so the robot doesn't badger the family

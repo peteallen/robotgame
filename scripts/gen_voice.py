@@ -25,7 +25,7 @@ LINES = {
     "uh_oh": "Uh oh.",
     "go_mop_install": "Going to install the mop pads.",
     "mop_installed": "Mop pads installed. Starting mopping.",
-    "go_mop_wash": "Going to wash the mop.",
+    "go_mop_wash": "Going to wash the mop pads.",
     "washing": "Washing the mop.",
     "mop_done": "Mopping complete.",
     "bag_full": "Dust bag full. Please empty the dust bag.",

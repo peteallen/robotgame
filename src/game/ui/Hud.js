@@ -38,6 +38,16 @@ export class Hud {
   // returns true if the tap was consumed by the HUD
   onTap(x, y) {
     const g = this.game;
+    // mode picker slots (pill origin 22, 238) — generous fat-finger padding
+    const modes = ['vac', 'mop', 'both'];
+    for (let i = 0; i < 3; i++) {
+      const sx = 22 + 10 + i * 76;
+      const sy = 238 + 8;
+      if (x > sx - 6 && x < sx + 70 + 6 && y > sy - 6 && y < sy + 50 + 6) {
+        g.requestMode(modes[i]);
+        return true;
+      }
+    }
     // sound button top-right
     if (Math.hypot(x - 1610, y - 66) < 52) {
       const muted = g.sound.toggleMute();
@@ -152,6 +162,43 @@ export class Hud {
       pctx.fill();
     });
 
+    // ---- mode picker pill (vac / mop / both) — pick your cleaning flavor
+    this.drawPill(ctx, 22, 238, 245, (pctx) => {
+      const modes = ['vac', 'mop', 'both'];
+      const pending = r.mopMode !== g.modeNeedsPads(); // robot's off to the dock to swap gear
+      for (let i = 0; i < 3; i++) {
+        const mode = modes[i];
+        const active = g.userMode === mode;
+        const sx = 10 + i * 76;
+        // slot background
+        pctx.fillStyle = active ? 'rgba(69, 205, 187, 0.95)' : 'rgba(120, 120, 140, 0.12)';
+        roundRect(pctx, sx, 8, 70, 50, 14);
+        pctx.fill();
+        // icons, with a soft glow when this is the chosen one
+        pctx.save();
+        if (active) {
+          pctx.shadowBlur = 6;
+          pctx.shadowColor = 'rgba(255, 255, 255, 0.8)';
+        }
+        const cx = sx + 35;
+        const cy = 33;
+        if (mode === 'both') {
+          drawModeIcon(pctx, this.game, 'vac', cx - 8, cy, 26, active);
+          drawModeIcon(pctx, this.game, 'mop', cx + 8, cy, 26, active);
+        } else {
+          drawModeIcon(pctx, this.game, mode, cx, cy, 36, active);
+        }
+        pctx.restore();
+        // pulsing outline on the active slot while gear is in transit
+        if (pending && active) {
+          pctx.strokeStyle = 'rgba(255, 255, 255, ' + (0.4 + 0.5 * Math.abs(Math.sin(this.t * 5))) + ')';
+          pctx.lineWidth = 3.5;
+          roundRect(pctx, sx, 8, 70, 50, 14);
+          pctx.stroke();
+        }
+      }
+    });
+
     // ---- sound button (top-right)
     const muted = g.sound.muted;
     const pop = 1 + Math.max(0, this.soundBtnPop) * 0.25;
@@ -210,6 +257,42 @@ export class Hud {
     ctx.stroke();
     drawContent(ctx);
     ctx.restore();
+  }
+}
+
+// draws a vac/mop icon at (cx, cy), sprite if we have one, doodle if not
+function drawModeIcon(ctx, game, mode, cx, cy, size, active) {
+  const img = game.assets.get(mode === 'vac' ? 'icon_vacuum' : 'icon_mop');
+  if (img) {
+    ctx.drawImage(img, cx - size / 2, cy - size / 2, size, size);
+    return;
+  }
+  // procedural fallback — plain but friendly
+  const col = active ? '#fff' : '#3a4152';
+  if (mode === 'vac') {
+    // spiral swirl
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let a = 0; a < TAU * 1.75; a += 0.25) {
+      const rr = size * 0.08 + a * size * 0.055;
+      const px = cx + Math.cos(a) * rr;
+      const py = cy + Math.sin(a) * rr;
+      if (a === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  } else {
+    // droplet + a little pad bar
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - size * 0.4);
+    ctx.quadraticCurveTo(cx + size * 0.3, cy, cx, cy + size * 0.22);
+    ctx.quadraticCurveTo(cx - size * 0.3, cy, cx, cy - size * 0.4);
+    ctx.fill();
+    roundRect(ctx, cx - size * 0.32, cy + size * 0.3, size * 0.64, size * 0.14, size * 0.07);
+    ctx.fill();
   }
 }
 

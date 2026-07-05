@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from gen_voice import LINES, api_key, OUT
 
-MODEL = os.environ.get("TRANSCRIBE_MODEL", "openai/gpt-audio")
+MODEL = os.environ.get("TRANSCRIBE_MODEL", "google/gemini-3.5-flash")
 
 
 FILLER = re.compile(r"provide the audio|play the audio|transcribe it|audio file", re.I)
@@ -29,8 +29,8 @@ def transcribe(path: Path) -> str:
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "input_audio", "input_audio": {"data": data, "format": "wav"}},
                 {"type": "text", "text": "Transcribe the attached audio EXACTLY, word for word. Output only the transcription."},
+                {"type": "input_audio", "input_audio": {"data": data, "format": "wav"}},
             ],
         }],
     }
@@ -54,7 +54,8 @@ def transcribe(path: Path) -> str:
 
 
 def norm(s: str) -> str:
-    return re.sub(r"[^a-z ]", "", s.lower()).strip()
+    # drop everything but letters so "dust bin" == "dustbin"
+    return re.sub(r"[^a-z]", "", s.lower())
 
 
 def main():
