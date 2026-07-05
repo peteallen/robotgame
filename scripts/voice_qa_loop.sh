@@ -1,7 +1,7 @@
 #!/bin/bash
 # Verify all voice clips by transcription; regenerate + trim failures; repeat.
+# Models come from the scripts' defaults (see "Models" in README.md).
 cd "$(dirname "$0")/.."
-export VOICE_MODEL=openai/gpt-audio
 for round in 1 2 3; do
   echo "=== VERIFY ROUND $round ==="
   OUT=$(python3 scripts/verify_voice.py 2>&1)

@@ -156,11 +156,11 @@ export class Game {
     this.particles.sparkle(this.dock.x, this.dock.spriteTop + 40, 8);
   }
 
-  // is a potty disaster anywhere in progress?
+  // is a potty disaster anywhere in progress? (pads merely being installed
+  // is NOT a disaster — that's just mop mode)
   messActive() {
     return this.pendingMop ||
       this.robot.smearT > 0 ||
-      this.robot.mopMode ||
       this.smears.count > 0 ||
       this.actions.current?.name === 'mopMode' ||
       this.dog.pooping() ||

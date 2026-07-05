@@ -92,6 +92,25 @@ Regenerate one sprite: edit its prompt in `art/prompts.txt`, run
 Every sprite is optional — the game draws procedural stand-ins for anything
 missing, so it runs before/without generated art.
 
+## Models
+
+Everything generated goes through OpenRouter. These are the defaults baked
+into each script (all overridable via the env var shown); change them here AND
+in the script comment if you switch:
+
+| Purpose | Model | Where | Override | Why this one |
+| --- | --- | --- | --- | --- |
+| Sprite/scene generation | `google/gemini-3.1-flash-image-preview` | `art/gen.sh` | `IMAGE_MODEL` | Nano Banana 2 — best quality/consistency for the locked art style; the lite default of the skill was skipped for fidelity. |
+| Image editing (variants) | `google/gemini-3.1-flash-image-preview` | `scripts/edit_image.py` | `EDIT_MODEL` | Same model as generation so edited variants (e.g. dust-bag states) stay pixel-consistent with their base sprite. |
+| Voice lines (TTS) | `openai/gpt-audio`, voice `coral` | `scripts/gen_voice.py` | `VOICE_MODEL`, `VOICE_NAME` | Only audio-output chat model that works on OpenRouter (`gpt-4o-audio-preview` is not a valid OpenRouter ID — 400s). Requires `stream: true` + `format: pcm16`; script wraps the PCM deltas into WAV (24 kHz mono). |
+| Voice QA (transcription) | `google/gemini-3.5-flash` | `scripts/verify_voice.py` | `TRANSCRIBE_MODEL` | `gpt-audio` too often ignores the audio attachment and answers the prompt instead; Gemini transcribes reliably. Every clip must pass verbatim transcription (`scripts/voice_qa_loop.sh`) — the TTS model sometimes *replies* to a line ("Thank you!" → "You're welcome") instead of reading it. |
+| Dev subagents | Claude Opus 4.8 | session tooling (Agent tool, `model: "opus"`) | — | Cheaper agents for small, scoped, disjoint-file tasks (HUD widgets, mechanical edits), each reviewed before integration. |
+
+Voice-line gotchas learned the hard way: quote the script line in «guillemets»
+with a "you are a TTS engine, not an assistant" system prompt, trim silence
+with `scripts/trim_voice.py`, and avoid phonetically ambiguous phrasing
+("wash the mop" transcribes as "wash them up" — we say "wash the mop pads").
+
 ## Asset checklist
 
 All shipping sprites and voice clips are declared in

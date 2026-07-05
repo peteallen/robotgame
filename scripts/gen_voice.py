@@ -35,7 +35,10 @@ LINES = {
     "thank_you": "Thank you!",
 }
 
-MODEL = os.environ.get("VOICE_MODEL", "openai/gpt-4o-audio-preview")
+# openai/gpt-audio is the audio-output model that actually exists on OpenRouter
+# (gpt-4o-audio-preview is NOT a valid OpenRouter model ID and 400s).
+# See "Models" in README.md before changing.
+MODEL = os.environ.get("VOICE_MODEL", "openai/gpt-audio")
 VOICE = os.environ.get("VOICE_NAME", "coral")
 
 

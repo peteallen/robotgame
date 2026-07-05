@@ -245,9 +245,9 @@ export class Dog {
       g.particles.hearts(this.x, this.y - 40, 3);
       return;
     }
-    // toddler's orders: tapping the dog starts the potty show (when the room
-    // isn't already mid-disaster)
-    if (!g.messActive() && this.startPottyRun()) return;
+    // toddler's orders: tapping the dog makes him poop. Always. (Unless he's
+    // mid-squat or riding the robot — startPottyRun handles those.)
+    if (this.startPottyRun()) return;
     if (this.state === 'sleep') {
       this.state = 'sit';
       this.stateT = 0;

@@ -10,6 +10,8 @@ import sys
 import urllib.request
 from pathlib import Path
 
+# Same model as generation (art/gen.sh) so edits match the originals' style.
+# See "Models" in README.md before changing.
 MODEL = os.environ.get("EDIT_MODEL", "google/gemini-3.1-flash-image-preview")
 
 

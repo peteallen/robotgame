@@ -15,6 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from gen_voice import LINES, api_key, OUT
 
+# Gemini for transcription on purpose: openai/gpt-audio too often ignores the
+# audio attachment and answers the text prompt instead. See "Models" in README.md.
 MODEL = os.environ.get("TRANSCRIBE_MODEL", "google/gemini-3.5-flash")
 
 
