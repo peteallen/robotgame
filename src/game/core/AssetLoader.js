@@ -34,10 +34,12 @@ export class AssetLoader {
 
   async loadAll(onProgress) {
     const names = Object.keys(MANIFEST);
+    // respect Vite's base path (e.g. /robotgame/ on GitHub Pages)
+    const base = import.meta.env.BASE_URL || '/';
     let done = 0;
     await Promise.all(
       names.map(async (name) => {
-        this.images[name] = await loadImage(`/assets/sprites/${MANIFEST[name]}`);
+        this.images[name] = await loadImage(`${base}assets/sprites/${MANIFEST[name]}`);
         done++;
         onProgress?.(done / names.length);
       })
