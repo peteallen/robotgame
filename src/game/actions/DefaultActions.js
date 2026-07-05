@@ -1701,7 +1701,8 @@ const Trapped = {
     // emergency light spilling out from under the furniture (synced with the
     // status-ring blink — both run on wobbleT). Two layers: a hot core right
     // at the robot plus a wide soft wash, so it reads clear across the room.
-    const on = Math.max(0, Math.sin(r.wobbleT * 8));
+    // pulses bright/dim but never fully off — an ember between flashes
+    const on = 0.22 + 0.78 * Math.max(0, Math.sin(r.wobbleT * 8));
     const cy = r.y - r.z;
     const wide = ctx.createRadialGradient(r.x, cy, 12, r.x, cy, 185);
     wide.addColorStop(0, `rgba(255, 60, 45, ${0.10 + 0.26 * on})`);
@@ -1717,6 +1718,17 @@ const Trapped = {
     ctx.beginPath();
     ctx.arc(r.x, cy, 62, 0, TAU);
     ctx.fill();
+    // and the lidar turret doubles as a rotating emergency beacon: two red
+    // beams sweep across the floor like a tiny police light
+    const ang = r.wobbleT * 4.2;
+    ctx.fillStyle = `rgba(255, 70, 50, ${0.09 + 0.13 * on})`;
+    for (const off of [0, Math.PI]) {
+      ctx.beginPath();
+      ctx.moveTo(r.x, cy);
+      ctx.arc(r.x, cy, 215, ang + off - 0.17, ang + off + 0.17);
+      ctx.closePath();
+      ctx.fill();
+    }
   },
   end(g) {
     const r = g.robot;
