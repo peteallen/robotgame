@@ -5,6 +5,7 @@ import { Voice } from './core/Voice.js';
 import { Particles } from './fx/Particles.js';
 import { Smears } from './fx/Smears.js';
 import { Cutaway } from './fx/Cutaway.js';
+import { Splash } from './fx/Splash.js';
 import { Room, WORLD_W, WORLD_H, roundRect } from './world/Room.js';
 import { Dock } from './entities/Dock.js';
 import { Robot } from './entities/Robot.js';
@@ -31,6 +32,7 @@ export class Game {
     this.dog = new Dog(this);
     this.ambience = new Ambience(this);
     this.cutaway = new Cutaway(this);
+    this.splash = new Splash(this);
     this.pendingMop = false;
 
     // cleaning mode the PLAYER chose: 'vac' | 'mop' | 'both'
@@ -263,6 +265,10 @@ export class Game {
   // ---- input --------------------------------------------------------------
 
   onPointerDown(cx, cy) {
+    if (this.splash.active) {
+      this.splash.dismiss();
+      return;
+    }
     this.sound.unlock();
     this.lastInteraction = this.time;
     const p = this.screenToWorld(cx, cy);
@@ -276,6 +282,7 @@ export class Game {
   }
 
   onPointerMove(cx, cy) {
+    if (this.splash.active) return;
     if (!this.pointerDown || !this.lastCrumb) return;
     const p = this.screenToWorld(cx, cy);
     // a sock riding the finger
@@ -313,6 +320,7 @@ export class Game {
   }
 
   onPointerUp(cx, cy) {
+    if (this.splash.active) return;
     if (!this.pointerDown) return;
     this.pointerDown = false;
     const p = this.screenToWorld(cx, cy);
@@ -529,6 +537,11 @@ export class Game {
       this._lastH = window.innerHeight;
       this.resize();
     }
+
+    // title screen holds the world still until the start tap; during the
+    // dismiss fade the room comes alive underneath
+    this.splash.update(dt);
+    if (this.splash.active && !this.splash.fading) return;
     this.room.update(dt);
     this.ambience.update(dt);
     this.dock.update(dt);
@@ -818,6 +831,9 @@ export class Game {
     ctx.fillRect(0, 0, WORLD_W, WORLD_H);
 
     this.hud.draw(ctx);
+
+    // title screen on top of everything
+    this.splash.draw(ctx);
   }
 
   drawHat(ctx) {

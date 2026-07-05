@@ -1,4 +1,6 @@
 export const SPRITE_MANIFEST = Object.freeze({
+  splash: 'splash.jpg',
+  title_logo: 'title_logo.png',
   room: 'room.png',
   rug: 'rug.png',
   window: 'window.png',

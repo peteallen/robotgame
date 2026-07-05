@@ -40,6 +40,7 @@ SPRITES = {
     "dog_walk": (1.0, 320, "green"),
     "dog_sleep": (1.0, 320, "green"),
     "poop": (1.0, 220, "green"),
+    "title_logo": (2.48, 1100, "green"),
     "underside": (1.0, 512, "green"),
     "mop_pads": (1.0, 220, "green"),
     "icon_vacuum": (1.0, 160, "green"),

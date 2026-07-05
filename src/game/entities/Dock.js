@@ -365,10 +365,11 @@ export class Dock {
     ctx.lineWidth = 4 + pulse * 2;
     roundRect(ctx, rect.x - 5, rect.y - 5, rect.w + 10, rect.h + 10, 12);
     ctx.stroke();
-    // bouncing bubble above the dock
+    // bouncing bubble over the dock's top — clamped so it never leaves the
+    // screen (the tower top nearly touches the world's top edge)
     const spread = (i - (total - 1) / 2) * 74;
     const bx = this.x + spread;
-    const by = this.y - this.drawH + 42 - Math.abs(Math.sin(t * 3)) * 12;
+    const by = Math.max(56, this.spriteTop + 48) - Math.abs(Math.sin(t * 3)) * 9;
     ctx.save();
     ctx.translate(bx, by);
     ctx.fillStyle = 'rgba(255, 252, 245, 0.96)';
