@@ -49,6 +49,11 @@ export class Robot {
     this.mopMode = false;
     this.fateTarget = null; // disguised waypoint that leads through... something
 
+    // dock maintenance
+    this.waitingForBag = false; // parked, bin full, bag full — needs a human
+    this.announceT = 0;
+    this.actionDockOk = false; // actions may drive onto the dock pad
+
     // visuals
     this.z = 0;
     this.vz = 0;
@@ -183,11 +188,12 @@ export class Robot {
     this.bump = null;
     if (reason === 'battery') {
       this.setExpr('sleepy', 3);
-      this.game.sound.sleepyBeep();
+      this.game.say('go_charge');
     } else if (reason === 'bin') {
       this.setExpr('full', 3);
-      this.game.sound.ackBeep();
+      this.game.say('go_empty');
     } else {
+      this.game.say('go_dock');
       this.game.sound.ackBeep();
     }
   }
@@ -312,7 +318,7 @@ export class Robot {
       const ny = this.y + Math.sin(this.heading) * this.speed * dt;
       const dockingStates = ['align', 'docked', 'empty', 'charge', 'leaving'];
       const opts = {
-        ignoreDock: dockingStates.includes(this.state) || this.state === 'godock',
+        ignoreDock: dockingStates.includes(this.state) || this.state === 'godock' || this.actionDockOk,
         ignoreCouch: this.allowUnderCouch === true,
       };
       if (g.room.isFree(nx, ny, R, opts)) {
@@ -329,9 +335,9 @@ export class Robot {
       }
     }
 
-    // suction
-    this.suctionOn = ['clean', 'seek', 'leaving'].includes(this.state) ||
-      (this.state === 'action' && this.actionSuction === true);
+    // suction (a truly full bin can't hold any more)
+    this.suctionOn = (['clean', 'seek', 'leaving'].includes(this.state) ||
+      (this.state === 'action' && this.actionSuction === true)) && this.bin < 0.999;
     if (this.suctionOn && Math.abs(this.speed) > 10) {
       g.dirt.trySuck(this);
     }

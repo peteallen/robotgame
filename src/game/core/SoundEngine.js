@@ -319,6 +319,40 @@ export class SoundEngine {
     this.noise({ dur: 0.3, vol: 0.1, from: up ? 500 : 1500, to: up ? 1500 : 500, q: 3 });
   }
 
+  glug() {
+    // water filling: rising bloops
+    [0, 0.16, 0.34, 0.5].forEach((d, i) => {
+      this.tone({ freq: 180 + i * 60, end: 320 + i * 70, dur: 0.13, type: 'sine', vol: 0.18, delay: d });
+    });
+    this.noise({ dur: 0.7, vol: 0.06, from: 900, to: 1600, q: 1.4 });
+  }
+
+  drainGurgle() {
+    [0, 0.14, 0.3, 0.48].forEach((d, i) => {
+      this.tone({ freq: 360 - i * 55, end: 200 - i * 30, dur: 0.14, type: 'sine', vol: 0.16, delay: d });
+    });
+    this.noise({ dur: 0.8, vol: 0.09, from: 1400, to: 300, q: 1.2 });
+  }
+
+  clunk() {
+    // mop pads locking in
+    this.tone({ freq: 130, end: 80, dur: 0.09, type: 'sine', vol: 0.32 });
+    this.noise({ dur: 0.05, vol: 0.14, from: 700, to: 300, delay: 0.01 });
+    this.tone({ freq: 900, dur: 0.05, type: 'square', vol: 0.07, delay: 0.09 });
+  }
+
+  errorBuzz() {
+    for (const d of [0, 0.22]) {
+      this.tone({ freq: 160, end: 140, dur: 0.16, type: 'square', vol: 0.1, delay: d, curve: 'lin' });
+      this.tone({ freq: 83, dur: 0.16, type: 'sawtooth', vol: 0.09, delay: d });
+    }
+  }
+
+  washSwish() {
+    this.noise({ dur: 0.5, vol: 0.12, from: 500, to: 1300, q: 1.1 });
+    this.noise({ dur: 0.5, vol: 0.1, from: 1300, to: 450, q: 1.1, delay: 0.45 });
+  }
+
   purr(dur = 1.2) {
     if (!this.ctx) return;
     const t0 = this.ctx.currentTime;
