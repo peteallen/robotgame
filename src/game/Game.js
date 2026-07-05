@@ -546,7 +546,7 @@ export class Game {
     }
     // gentle reminder while anything on the dock needs a human
     if (this.dock.anyAlert()) {
-      this.alertRemindT = (this.alertRemindT ?? 8) - dt;
+      this.alertRemindT = (this.alertRemindT ?? 20) - dt;
       if (this.alertRemindT <= 0) {
         this.alertRemindT = 34;
         this.dock.beacon = 1.2;
@@ -555,7 +555,7 @@ export class Game {
         else if (this.dock.needsDirty()) this.say('dirty_full');
       }
     } else {
-      this.alertRemindT = 8;
+      this.alertRemindT = 20;
     }
     // 3. fate: a fresh pile quietly bends the robot's cleaning path toward it
     this.fateT = (this.fateT ?? 3) - dt;

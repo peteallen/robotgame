@@ -36,6 +36,13 @@ jobs:
           GITHUB_PAGES: 'true'
           VITE_ASSET_VERSION: ${{ github.sha }}
 
+      - name: Write build version
+        run: |
+          printf '{"version":"%s","builtAt":"%s"}\n' \
+            "${GITHUB_SHA}" \
+            "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            > dist/version.json
+
       - name: Publish built site
         env:
           GITHUB_TOKEN: ${{ github.token }}

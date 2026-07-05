@@ -308,6 +308,10 @@ export class Robot {
         this.goDock('battery');
       }
     }
+    // full bin heads home no matter how it got full
+    if (this.bin >= 1 && !this.controlled && ['clean', 'seek'].includes(this.state)) {
+      this.goDock('bin');
+    }
 
     if (!this.controlled) this.updateState(dt);
 

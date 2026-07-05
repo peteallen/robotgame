@@ -1,3 +1,5 @@
+import { publicAssetUrl } from './assetUrl.js';
+
 // Loads sprite images. Every sprite is optional: entities fall back to
 // procedural canvas drawing until the generated art lands in public/assets.
 const MANIFEST = {
@@ -35,14 +37,10 @@ export class AssetLoader {
 
   async loadAll(onProgress) {
     const names = Object.keys(MANIFEST);
-    // respect Vite's base path (e.g. /robotgame/ on GitHub Pages)
-    const base = import.meta.env.BASE_URL || '/';
-    const assetVersion = import.meta.env.VITE_ASSET_VERSION || '';
-    const cacheBust = assetVersion ? `?v=${encodeURIComponent(assetVersion)}` : '';
     let done = 0;
     await Promise.all(
       names.map(async (name) => {
-        this.images[name] = await loadImage(`${base}assets/sprites/${MANIFEST[name]}${cacheBust}`);
+        this.images[name] = await loadImage(publicAssetUrl(`assets/sprites/${MANIFEST[name]}`));
         done++;
         onProgress?.(done / names.length);
       })

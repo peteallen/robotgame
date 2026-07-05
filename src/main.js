@@ -1,5 +1,6 @@
 import { Game } from './game/Game.js';
 import { AssetLoader } from './game/core/AssetLoader.js';
+import { startVersionWatcher } from './game/core/VersionWatcher.js';
 
 async function boot() {
   const canvas = document.getElementById('game');
@@ -8,6 +9,7 @@ async function boot() {
 
   const game = new Game(canvas, assets);
   window.__game = game; // handy for debugging
+  startVersionWatcher();
 
   window.addEventListener('resize', () => game.resize());
   window.addEventListener('orientationchange', () => setTimeout(() => game.resize(), 100));

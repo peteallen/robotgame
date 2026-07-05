@@ -1,3 +1,5 @@
+import { publicAssetUrl } from './assetUrl.js';
+
 // Spoken announcements, generated offline via OpenRouter (openai/gpt-audio)
 // and played through the game's WebAudio graph so the mute button applies.
 const LINES = [
@@ -5,6 +7,9 @@ const LINES = [
   'uh_oh', 'go_mop_install', 'mop_installed', 'go_mop_wash', 'washing',
   'mop_done', 'bag_full', 'clean_empty', 'dirty_full', 'thank_you',
 ];
+
+// nag lines get a longer minimum gap so the robot doesn't badger the family
+const ALERT_COOLDOWN = { bag_full: 17000, clean_empty: 17000, dirty_full: 17000 };
 
 export class Voice {
   constructor(sound) {
@@ -17,10 +22,9 @@ export class Voice {
   }
 
   async load() {
-    const base = import.meta.env.BASE_URL || '/';
     await Promise.all(LINES.map(async (name) => {
       try {
-        const res = await fetch(`${base}assets/voice/${name}.wav`);
+        const res = await fetch(publicAssetUrl(`assets/voice/${name}.wav`));
         if (res.ok) this.raw[name] = await res.arrayBuffer();
       } catch (e) { /* voice pack missing — beeps only, still fine */ }
     }));
@@ -31,7 +35,8 @@ export class Voice {
     if (!s.ctx || s.muted) return;
     if (this.speaking && !force) return;
     const now = performance.now();
-    if (!force && this.lastSaid[name] && now - this.lastSaid[name] < cooldown) return;
+    const minGap = Math.max(cooldown, ALERT_COOLDOWN[name] ?? 0);
+    if (this.lastSaid[name] && now - this.lastSaid[name] < minGap) return;
     const play = (buf) => {
       this.lastSaid[name] = now;
       this.speaking = true;

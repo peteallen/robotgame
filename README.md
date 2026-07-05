@@ -26,13 +26,24 @@ browser. Sound starts after the first tap (browser autoplay rules).
   rainbow trail, bubble party (pop the bubbles!), disco mode, the robotic-arm
   sock grab (Roborock Z70 style!), toy tidy-up, cat ride, happy beeps,
   fireworks, a big sneeze, bounce party, hover mode, under-couch treasure dive.
-- **Dust bin fills up** → he drives to the dock, spins 180° and BACKS IN like a
-  real robot (with a backup beeper!), then auto-empties with a big satisfying
-  WHOOSH into the tower's dust bag.
-- **Battery runs low** → he docks and fast-charges (a few seconds), then gets
-  back to work.
-- **Tap the dock** → he comes home, backs in, and stays parked (naps with
+- **Dust bin fills up** → he announces "Going to empty the dust bin", drives
+  home, spins 180° and BACKS IN (with a backup beeper!), then auto-empties with
+  a big WHOOSH into the dock's dust bag.
+- **Battery runs low** → "Going to charge" → docks and fast-charges.
+- **The dog** naps, trots around, rides the robot — and sometimes poops on the
+  floor (randomly, or when you tap the dog). The robot drives through it,
+  obliviously smears it EVERYWHERE, then: "Uh oh." → "Going to install the mop
+  pads" → docks for pads → mops the whole mess → "Going to wash the mop" →
+  docks again to wash (watch the water tanks change).
+- **Maintain the dock or he stops working**: the dust bag fills up (can't
+  empty — he waits at the dock), the clean tank runs dry and the dirty tank
+  fills (can't mop — the mess stays). Bouncing red ! bubbles show exactly what
+  to tap; one tap services it ("Thank you!") and he gets right back to it.
+- **Tap the dock base** → he comes home, backs in, and stays parked (naps with
   little z's) until you tap him awake.
+- He talks — real voice lines generated with OpenRouter (`openai/gpt-audio`):
+  "Starting cleaning", "Dust bag full", "Mopping complete", and friends
+  (see `scripts/gen_voice.py`; clips in `public/assets/voice/`).
 - **Socks live in the laundry basket** — tap the basket to pop one onto the
   floor, or drag one out and drop it anywhere. Before long the robot arm
   fetches it back to the basket. The sock stash is stored by the dev server
