@@ -35,7 +35,10 @@ browser. Sound starts after the first tap (browser autoplay rules).
   little z's) until you tap him awake.
 - **Socks live in the laundry basket** — tap the basket to pop one onto the
   floor, or drag one out and drop it anywhere. Before long the robot arm
-  fetches it back to the basket. Socks persist between sessions.
+  fetches it back to the basket. The sock stash is stored by the dev server
+  (`.sock-stash.json`), so every browser/device in the house sees the same
+  basket; on static hosting (GitHub Pages) it falls back to per-browser
+  localStorage.
 - **Tap the cat, TV, plant, toy box, couch** — everything does something.
 - **Star meter** fills as he cleans; five stars = fireworks celebration.
 - If nobody's tapping, surprises happen on their own every minute or so.
