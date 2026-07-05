@@ -34,6 +34,7 @@ jobs:
         run: npm run build
         env:
           GITHUB_PAGES: 'true'
+          VITE_ASSET_VERSION: ${{ github.sha }}
 
       - name: Publish built site
         env:
