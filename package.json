@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "check:assets": "node scripts/check_assets.mjs",
+    "check:dist": "node scripts/check_assets.mjs --dist",
+    "build": "npm run check:assets && vite build && npm run check:dist",
     "preview": "vite preview"
   },
   "devDependencies": {

@@ -43,6 +43,9 @@ jobs:
             "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             > dist/version.json
 
+      - name: Validate built site
+        run: node scripts/check_assets.mjs --dist --require-version
+
       - name: Publish built site
         env:
           GITHUB_TOKEN: ${{ github.token }}

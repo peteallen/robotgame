@@ -1,6 +1,8 @@
-export const BUILD_VERSION = import.meta.env.VITE_ASSET_VERSION || '';
+const ENV = import.meta.env ?? {};
 
-const BASE_URL = import.meta.env.BASE_URL || '/';
+export const BUILD_VERSION = ENV.VITE_ASSET_VERSION || '';
+
+const BASE_URL = ENV.BASE_URL || '/';
 
 export function publicAssetUrl(path, { versioned = true } = {}) {
   const cleanPath = path.replace(/^\/+/, '');

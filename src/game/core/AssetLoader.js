@@ -1,55 +1,19 @@
 import { publicAssetUrl } from './assetUrl.js';
+import { SPRITE_MANIFEST } from './assetManifest.js';
 
 // Loads sprite images. Every sprite is optional: entities fall back to
 // procedural canvas drawing until the generated art lands in public/assets.
-const MANIFEST = {
-  room: 'room.png',
-  rug: 'rug.png',
-  window: 'window.png',
-  tv: 'tv.png',
-  robot: 'robot.png',
-  dock: 'dock.png',
-  dock_half: 'dock_half.png',
-  dock_full: 'dock_full.png',
-  tv_show1: 'tv_show1.jpg',
-  tv_show2: 'tv_show2.jpg',
-  tv_show3: 'tv_show3.jpg',
-  underside: 'underside.png',
-  mop_pads: 'mop_pads.png',
-  icon_vacuum: 'icon_vacuum.png',
-  icon_mop: 'icon_mop.png',
-  couch: 'couch.png',
-  table: 'table.png',
-  plant: 'plant.png',
-  toybox: 'toybox.png',
-  catbed: 'catbed.png',
-  basket: 'basket.png',
-  sparkle: 'sparkle.png',
-  dog_sit: 'dog_sit.png',
-  dog_walk: 'dog_walk.png',
-  dog_sleep: 'dog_sleep.png',
-  poop: 'poop.png',
-  dustbunny: 'dustbunny.png',
-  crumbs: 'crumbs.png',
-  cereal: 'cereal.png',
-  leaf: 'leaf.png',
-  sock: 'sock.png',
-  toy_ball: 'toy_ball.png',
-  toy_block: 'toy_block.png',
-  disco_ball: 'disco_ball.png',
-};
-
 export class AssetLoader {
   constructor() {
     this.images = {};
   }
 
   async loadAll(onProgress) {
-    const names = Object.keys(MANIFEST);
+    const names = Object.keys(SPRITE_MANIFEST);
     let done = 0;
     await Promise.all(
       names.map(async (name) => {
-        this.images[name] = await loadImage(publicAssetUrl(`assets/sprites/${MANIFEST[name]}`));
+        this.images[name] = await loadImage(publicAssetUrl(`assets/sprites/${SPRITE_MANIFEST[name]}`));
         done++;
         onProgress?.(done / names.length);
       })

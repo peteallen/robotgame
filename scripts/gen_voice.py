@@ -28,6 +28,7 @@ LINES = {
     "go_mop_wash": "Going to wash the mop pads.",
     "washing": "Washing the mop.",
     "mop_done": "Mopping complete.",
+    "remove_pads": "Removing the mop pads.",
     "bag_full": "Dust bag full. Please empty the dust bag.",
     "clean_empty": "Clean water tank empty. Please refill the clean water tank.",
     "dirty_full": "Dirty water tank full. Please empty the dirty water tank.",

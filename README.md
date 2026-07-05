@@ -45,8 +45,12 @@ browser. Sound starts after the first tap (browser autoplay rules).
   washed (sudsy cutaway, water tanks exchange) before removal, and every ~1
   min of mopping he announces "Going to wash the mop pads" and heads home.
   Mop-only mode ignores crumbs entirely — vacuuming is not its job.
-- **Tap the dock base** → he comes home, backs in, and stays parked (naps with
-  little z's) until you tap him awake.
+- **Tap the dock base** → he comes home, backs in, and services whatever he's
+  wearing — empties the bin if it has dust, washes the pads if they're dirty
+  (undercarriage cam), tops up the battery — then naps until you tap him awake.
+- **Mop dirtiness gauge** lives next to the dust-bin gauge (ghosted when pads
+  are off); when the pads get too grubby he announces a wash trip on his own,
+  exactly like the bin-full trip.
 - He talks — real voice lines generated with OpenRouter (`openai/gpt-audio`):
   "Starting cleaning", "Dust bag full", "Mopping complete", and friends
   (see `scripts/gen_voice.py`; clips in `public/assets/voice/`).

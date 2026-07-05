@@ -201,7 +201,7 @@ export class Robot {
   summon() {
     // tapping the dock always means "go home and STAY until tapped awake"
     this.stayDocked = true;
-    if (['docked', 'charge', 'empty', 'align'].includes(this.state)) return;
+    if (['docked', 'charge', 'empty', 'washpads', 'align'].includes(this.state)) return;
     if (this.controlled) return; // release() sends it home when the action ends
     this.goDock('summon');
   }

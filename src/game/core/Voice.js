@@ -1,13 +1,8 @@
 import { publicAssetUrl } from './assetUrl.js';
+import { VOICE_LINES } from './assetManifest.js';
 
 // Spoken announcements, generated offline via OpenRouter (openai/gpt-audio)
 // and played through the game's WebAudio graph so the mute button applies.
-const LINES = [
-  'start_clean', 'go_charge', 'charge_done', 'go_empty', 'emptying', 'go_dock',
-  'uh_oh', 'go_mop_install', 'mop_installed', 'go_mop_wash', 'washing',
-  'mop_done', 'remove_pads', 'bag_full', 'clean_empty', 'dirty_full', 'thank_you',
-];
-
 // nag lines get a longer minimum gap so the robot doesn't badger the family
 const ALERT_COOLDOWN = { bag_full: 17000, clean_empty: 17000, dirty_full: 17000 };
 
@@ -22,7 +17,7 @@ export class Voice {
   }
 
   async load() {
-    await Promise.all(LINES.map(async (name) => {
+    await Promise.all(VOICE_LINES.map(async (name) => {
       try {
         const res = await fetch(publicAssetUrl(`assets/voice/${name}.wav`));
         if (res.ok) this.raw[name] = await res.arrayBuffer();
