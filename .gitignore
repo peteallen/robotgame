@@ -5,3 +5,5 @@ dist/
 .env.*
 !.env.example
 .sock-stash.json
+__pycache__/
+*.pyc

@@ -394,7 +394,7 @@ export class Robot {
         this.rainbowHue = (this.rainbowHue + 9) % 360;
       }
     }
-    const trailLife = this.trailMode === 'turbo' ? 0.5 : this.trailMode === 'mop' ? 0.9 : 1.6;
+    const trailLife = this.trailMode === 'turbo' ? 0.5 : this.trailMode === 'mop' ? 3.2 : 1.6;
     for (let i = this.trail.length - 1; i >= 0; i--) {
       this.trail[i].age += dt;
       if (this.trail[i].age > trailLife) this.trail.splice(i, 1);
@@ -792,13 +792,15 @@ export class Robot {
         ctx.stroke();
       }
     } else if (this.trailMode === 'mop') {
-      // glistening freshly-mopped streak
+      // glistening freshly-mopped streak that slowly evaporates
       for (let i = 1; i < this.trail.length; i++) {
         const p = this.trail[i];
         const q = this.trail[i - 1];
-        const a = clamp(1 - p.age / 0.9, 0, 1);
-        ctx.strokeStyle = `rgba(160, 220, 255, ${a * 0.35})`;
-        ctx.lineWidth = 52 * a + 4;
+        const t = clamp(1 - p.age / 3.2, 0, 1);
+        // holds wet for a while, then dries out
+        const a = t > 0.55 ? 1 : t / 0.55;
+        ctx.strokeStyle = `rgba(160, 220, 255, ${a * 0.32})`;
+        ctx.lineWidth = 46 + 8 * t;
         ctx.lineCap = 'round';
         ctx.beginPath();
         ctx.moveTo(q.x, q.y);

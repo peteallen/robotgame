@@ -267,27 +267,62 @@ export class Room {
       ctx.fill();
     }
     if (tv.on > 0) {
-      // playful bouncing shapes "cartoon"
+      const t = this.tvWobble;
+      const frames = [
+        this.game.assets.get('tv_show1'),
+        this.game.assets.get('tv_show2'),
+        this.game.assets.get('tv_show3'),
+      ].filter(Boolean);
       ctx.save();
       roundRect(ctx, tv.x, tv.y, tv.w, tv.h, 8);
       ctx.clip();
-      const t = this.tvWobble;
-      const g = ctx.createLinearGradient(tv.x, tv.y, tv.x + tv.w, tv.y + tv.h);
-      g.addColorStop(0, `hsl(${(t * 40) % 360}, 80%, 72%)`);
-      g.addColorStop(1, `hsl(${(t * 40 + 120) % 360}, 80%, 78%)`);
-      ctx.fillStyle = g;
-      ctx.fillRect(tv.x, tv.y, tv.w, tv.h);
-      for (let i = 0; i < 4; i++) {
-        const bx = tv.x + tv.w * (0.2 + 0.2 * i) + Math.sin(t * 2.2 + i * 1.9) * 24;
-        const by = tv.y + tv.h * 0.5 + Math.cos(t * 3 + i * 2.3) * 26;
-        ctx.fillStyle = `hsla(${(i * 90 + t * 90) % 360}, 90%, 55%, 0.9)`;
-        ctx.beginPath();
-        if (i % 2) ctx.arc(bx, by, 16 + Math.sin(t * 4 + i) * 5, 0, TAU);
-        else ctx.rect(bx - 14, by - 14, 28, 28);
-        ctx.fill();
+      if (frames.length) {
+        // a real cartoon: each shot holds ~4s with a slow Ken Burns drift
+        const SHOT = 4;
+        const idx = Math.floor(t / SHOT) % frames.length;
+        const shotT = (t % SHOT) / SHOT;
+        const img = frames[idx];
+        const zoom = 1.06 + 0.07 * (idx % 2 === 0 ? shotT : 1 - shotT);
+        const panX = (idx % 2 === 0 ? 1 : -1) * (shotT - 0.5) * 14;
+        const dw = tv.w * zoom;
+        const dh = dw * (img.height / img.width);
+        ctx.drawImage(img, tv.x + (tv.w - dw) / 2 + panX, tv.y + (tv.h - dh) / 2, dw, dh);
+        // channel-flip flash
+        const sinceCut = (t % SHOT);
+        if (sinceCut < 0.14) {
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.85 * (1 - sinceCut / 0.14)})`;
+          ctx.fillRect(tv.x, tv.y, tv.w, tv.h);
+        }
+        // faint scanlines for TV feel
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+        for (let y = tv.y + 1; y < tv.y + tv.h; y += 3) {
+          ctx.fillRect(tv.x, y, tv.w, 1);
+        }
+        // soft screen sheen
+        const sheen = ctx.createLinearGradient(tv.x, tv.y, tv.x + tv.w * 0.6, tv.y + tv.h);
+        sheen.addColorStop(0, 'rgba(255,255,255,0.10)');
+        sheen.addColorStop(0.4, 'rgba(255,255,255,0)');
+        ctx.fillStyle = sheen;
+        ctx.fillRect(tv.x, tv.y, tv.w, tv.h);
+      } else {
+        // fallback: colorful bouncing shapes
+        const g = ctx.createLinearGradient(tv.x, tv.y, tv.x + tv.w, tv.y + tv.h);
+        g.addColorStop(0, `hsl(${(t * 40) % 360}, 80%, 72%)`);
+        g.addColorStop(1, `hsl(${(t * 40 + 120) % 360}, 80%, 78%)`);
+        ctx.fillStyle = g;
+        ctx.fillRect(tv.x, tv.y, tv.w, tv.h);
+        for (let i = 0; i < 4; i++) {
+          const bx = tv.x + tv.w * (0.2 + 0.2 * i) + Math.sin(t * 2.2 + i * 1.9) * 24;
+          const by = tv.y + tv.h * 0.5 + Math.cos(t * 3 + i * 2.3) * 26;
+          ctx.fillStyle = `hsla(${(i * 90 + t * 90) % 360}, 90%, 55%, 0.9)`;
+          ctx.beginPath();
+          if (i % 2) ctx.arc(bx, by, 16 + Math.sin(t * 4 + i) * 5, 0, TAU);
+          else ctx.rect(bx - 14, by - 14, 28, 28);
+          ctx.fill();
+        }
       }
       ctx.restore();
-      // glow
+      // glow spilling onto the wall
       ctx.fillStyle = `rgba(180, 220, 255, ${0.08 + 0.03 * Math.sin(t * 7)})`;
       roundRect(ctx, tv.x - 16, tv.y - 16, tv.w + 32, tv.h + 60, 16);
       ctx.fill();

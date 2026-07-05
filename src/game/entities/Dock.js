@@ -189,13 +189,32 @@ export class Dock {
 
     if (img) {
       ctx.drawImage(img, -this.drawW / 2, this.spriteTop, this.drawW, this.drawH);
+      // generated bag states crossfade as the bag fills (edited variants of
+      // the same sprite, so the dock stays pixel-identical)
+      const half = this.game.assets.get('dock_half');
+      const full = this.game.assets.get('dock_full');
+      const hideDuringFly = this.anim?.type === 'bag';
+      if (!hideDuringFly && (half || full)) {
+        const aHalf = clamp((this.bagFill - 0.08) / 0.32, 0, 1);
+        const aFull = clamp((this.bagFill - 0.55) / 0.3, 0, 1);
+        if (half && aHalf > 0) {
+          ctx.globalAlpha = aHalf;
+          ctx.drawImage(half, -this.drawW / 2, this.spriteTop, this.drawW, this.drawH);
+        }
+        if (full && aFull > 0) {
+          ctx.globalAlpha = aFull;
+          ctx.drawImage(full, -this.drawW / 2, this.spriteTop, this.drawW, this.drawH);
+        }
+        ctx.globalAlpha = 1;
+      }
     } else {
       this.drawFallbackTower(ctx);
     }
     ctx.restore();
 
     // ---- fills (world coords, sprite-calibrated) ----
-    this.drawBagFill(ctx);
+    // procedural dust overlay only if the generated bag variants are missing
+    if (!this.game.assets.get('dock_full')) this.drawBagFill(ctx);
     this.drawWater(ctx, this.cleanRect, this.cleanWater, 'clean');
     this.drawWater(ctx, this.dirtyRect, this.dirtyWater, 'dirty');
 
