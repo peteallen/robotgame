@@ -6,7 +6,11 @@ export class SoundEngine {
   constructor() {
     this.ctx = null;
     this.master = null;
-    this.muted = localStorage.getItem('robo_muted') === '1';
+    try {
+      this.muted = localStorage.getItem('robo_muted') === '1';
+    } catch (e) {
+      this.muted = false; // storage blocked (private mode) — default to sound on
+    }
     this.humNodes = null;
     this.discoNodes = null;
     this._discoTimer = null;
@@ -34,7 +38,9 @@ export class SoundEngine {
 
   toggleMute() {
     this.muted = !this.muted;
-    localStorage.setItem('robo_muted', this.muted ? '1' : '0');
+    try {
+      localStorage.setItem('robo_muted', this.muted ? '1' : '0');
+    } catch (e) { /* storage blocked — mute still applies this session */ }
     if (this.master) {
       this.master.gain.linearRampToValueAtTime(this.muted ? 0 : 0.9, this.ctx.currentTime + 0.1);
     }

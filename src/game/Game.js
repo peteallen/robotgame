@@ -51,10 +51,15 @@ export class Game {
     this.lastCrumb = null;
     this.dragSpawned = 0;
 
-    // socks live in the laundry basket between deliveries
+    // socks live in the laundry basket between deliveries — shared across
+    // every browser via the dev server's stash (localStorage as fallback)
     this.basketSocks = this.loadSocks();
     this.pendingSockDrag = false;
     this.dragSock = null; // {tint, x, y} while a sock rides the finger
+    this.syncSocks(true);
+    this._sockPoll = setInterval(() => {
+      if (!document.hidden) this.syncSocks(false);
+    }, 8000);
 
     // seed a few dirt piles so there's something to do immediately
     for (let i = 0; i < 6; i++) this.dirt.spawnRandom();
@@ -107,7 +112,36 @@ export class Game {
   }
 
   saveSocks() {
-    localStorage.setItem('robo_socks', JSON.stringify(this.basketSocks));
+    try {
+      localStorage.setItem('robo_socks', JSON.stringify(this.basketSocks));
+    } catch (e) { /* private mode etc. — the server stash still works */ }
+    // publish to the shared house-wide stash (dev server); absent on static hosts
+    fetch(`${import.meta.env.BASE_URL}api/socks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(this.basketSocks),
+    }).catch(() => {});
+  }
+
+  // adopt the server's shared stash so every browser sees the same basket
+  async syncSocks(seedIfEmpty) {
+    try {
+      const res = await fetch(`${import.meta.env.BASE_URL}api/socks`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const socks = await res.json();
+      if (Array.isArray(socks) && socks.length <= 16 && socks.every((t) => typeof t === 'string')) {
+        // don't yank a sock out from under an active finger
+        if (!this.dragSock && !this.pendingSockDrag) {
+          this.basketSocks = socks.slice(0, 8);
+          try {
+            localStorage.setItem('robo_socks', JSON.stringify(this.basketSocks));
+          } catch (e) { /* ok */ }
+        }
+      } else if (socks === null && seedIfEmpty) {
+        // first browser to connect seeds the stash
+        this.saveSocks();
+      }
+    } catch (e) { /* no backend (e.g. GitHub Pages) — localStorage only */ }
   }
 
   addBasketSock(tint) {
