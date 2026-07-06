@@ -122,7 +122,9 @@ function validateSourceReferences() {
     spriteRefs.push(...collectRegexMatches(/\bsprite:\s*['"]([A-Za-z0-9_-]+)['"]/g, text, file, 'sprite'));
     for (const call of text.matchAll(/\bsfx\.play\(([^;\n]*)\)/g)) {
       const args = call[1] ?? '';
-      for (const literal of args.matchAll(/['"]([a-z0-9_]+)['"]/g)) {
+      // only literals in clip positions: the first argument, or a ternary
+      // branch — NOT comparison operands like kind === 'excited'
+      for (const literal of args.matchAll(/(?:^|[(?:,])\s*['"]([a-z0-9_]+)['"]/g)) {
         sfxRefs.push({ value: literal[1], file, kind: 'sfx' });
       }
     }

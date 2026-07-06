@@ -15,7 +15,7 @@ import { Dog } from './entities/Dog.js';
 import { Ambience } from './entities/Ambience.js';
 import { Hud } from './ui/Hud.js';
 import { ActionRegistry } from './actions/ActionRegistry.js';
-import { registerDefaultActions } from './actions/DefaultActions.js';
+import { registerDefaultActions } from './actions/index.js';
 
 export class Game {
   constructor(canvas, assets) {
@@ -258,7 +258,6 @@ export class Game {
 
   onPickup(d) {
     this.stats.pickups++;
-    this.hud.onPickup();
   }
 
   celebrate() {
@@ -618,9 +617,11 @@ export class Game {
     }
 
     // ---- the poopocalypse pipeline ----------------------------------------
-    // 1. the robot blunders into a fresh pile (it has no idea)
+    // 1. the robot blunders into a fresh pile (it has no idea — and mop pads
+    // are NO protection: it smears with those on too, it just gets to skip
+    // the pad-install dock trip before cleaning up)
     const r0 = this.robot;
-    if (r0.smearT <= 0 && !r0.mopMode && r0.z <= 0 && Math.abs(r0.speed) > 25) {
+    if (r0.smearT <= 0 && r0.z <= 0 && Math.abs(r0.speed) > 25) {
       for (const d of this.dirt.items) {
         if (d.type !== 'poop' || d.drop > 0) continue;
         if (dist(d.x, d.y, r0.x, r0.y) < r0.radius * 0.85) {
@@ -675,14 +676,8 @@ export class Game {
             });
           }
         }
-        // rolling over a pile with pads on mops it up whole
-        const pile = this.dirt.items.find((d) => d.type === 'poop' && dist(d.x, d.y, r0.x, r0.y) < r0.radius + 14);
-        if (pile) {
-          this.dirt.remove(pile);
-          this.mopDirt = clamp(this.mopDirt + 0.5, 0, 1);
-          this.sound.squelch();
-          this.particles.dustPuff(pile.x, pile.y, 8, 'rgba(150, 110, 70, 0.45)');
-        }
+        // (no pile shortcut here: a fresh pile always goes through the smear
+        // collision above first — pads only help with the wiping after)
       }
     } else if (r0.trailMode === 'mop') {
       r0.trailMode = null;

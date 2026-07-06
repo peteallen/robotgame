@@ -30,15 +30,20 @@ browser. Sound starts after the first tap (browser autoplay rules).
   home, spins 180° and BACKS IN (with a backup beeper!), then auto-empties with
   a big WHOOSH into the dock's dust bag.
 - **Battery runs low** → "Going to charge" → docks and fast-charges.
-- **The dog** naps, trots around, rides the robot — and poops on the floor
-  every time you tap him (toddler's orders). The robot drives through it,
-  obliviously smears it EVERYWHERE, then: "Uh oh." → "Going to install the mop
-  pads" → docks for pads → mops the whole mess → "Going to wash the mop" →
-  docks again to wash (watch the water tanks change).
+- **The dog** naps, trots around, rides the robot, and every so often gets the
+  zoomies and CHASES the robot around the room, barking (real recorded corgi
+  barks) while the robot flees in a panic. He also poops on the floor every
+  time you tap him (toddler's orders). The robot drives through it,
+  obliviously smears it EVERYWHERE — mop pads installed or not — then:
+  "Uh oh." → installs pads if it needs them (skips the trip if they're already
+  on) → mops the whole mess → "Going to wash the mop pads" → docks to wash
+  (watch the water tanks change).
 - **Maintain the dock or he stops working**: the dust bag fills up (can't
   empty — he waits at the dock), the clean tank runs dry and the dirty tank
-  fills (can't mop — the mess stays). Bouncing red ! bubbles show exactly what
-  to tap; one tap services it ("Thank you!") and he gets right back to it.
+  fills (can't mop — the mess stays). While ANYTHING on the dock needs a
+  human, a docked robot blinks its light red and flat-out refuses to head
+  back out. Bouncing red ! bubbles show exactly what to tap; one tap services
+  it ("Thank you!") and he gets right back to it.
 - **Mode picker (left HUD)**: vacuum / mop / vacuum+mop. Switching sends him to
   the dock — "Going to install the mop pads" or "Removing the mop pads" — with
   an undercarriage-cam cutaway showing pads clicking on/off. Dirty pads get
@@ -71,27 +76,39 @@ browser. Sound starts after the first tap (browser autoplay rules).
 - **Clean the whole floor → victory party.** Dirt only appears when someone
   makes it (tap the floor, shake the plant for falling leaves, launch toys,
   pull socks out, poke the dog) — nothing falls on its own. When the last
-  speck, sock and toy is gone: "The room is all clean!", fireworks, a proud
-  pirouette, and the floor sparkles. Then it STAYS clean until Theo strikes.
+  speck, sock and toy is gone: "The room is all clean!", a proud pirouette,
+  then a full VICTORY LAP around the room trailing rainbow with fireworks
+  popping overhead — and then he drives home, backs into the dock, services
+  himself, and stays parked until somebody makes a brand-new mess.
+- **Battery gauge rides on the robot itself** (always upright, blinks red
+  when low, fills green while fast-charging on the dock).
 - **Tap the dog, TV, plant, toy box, couch** — everything does something.
-- **Star meter** fills as he cleans; five stars = fireworks celebration.
 - If nobody's tapping, surprises happen on their own every minute or so
   (dances, hops, dog rides — never new messes).
 
 ## Architecture
 
-- `src/game/Game.js` — main loop, y-sorted rendering, input routing, screen shake/dim.
+- `src/game/Game.js` — main loop, y-sorted rendering, input routing (incl. the
+  trapped-robot drag rescue), and the watchdog pipeline (poop chain, win
+  party, equipment trips, trap/chase timers, dock reminders).
 - `src/game/entities/Robot.js` — the star: movement AI (wander/spiral/wall-follow/
-  seek/dock state machine), LED-face expressions, suction, battery/bin.
-- `src/game/entities/` — `Dock` (auto-empty tower), `DirtSystem`, `Cat`, `Ambience`.
+  seek/dock state machine), LED-face expressions, on-body battery gauge,
+  suction, dock service plan, red distress blink (trapped / dock blocked).
+- `src/game/entities/` — `Dock` (bag + water tanks, service anims), `DirtSystem`
+  (all floor items; spawning marks the room dirty), `Dog` (the corgi: naps,
+  rides, chases, poops), `Ambience` (sunbeam + motes).
 - `src/game/world/Room.js` — layout, furniture footprints/collision, tap zones,
   procedural fallbacks for every sprite.
-- `src/game/actions/` — `ActionRegistry` (weighted, non-repeating) +
-  `DefaultActions.js` (every tap surprise, one object each).
-- `src/game/core/SoundEngine.js` — all audio synthesized live with WebAudio
-  (robot beeps, vacuum hum, the empty-roar, disco chiptune, cartoon meows).
-- `src/game/fx/Particles.js` — confetti/dust/sparkles/bubbles/hearts/flames.
-- `src/game/ui/Hud.js` — icon-only battery, bin, star meter, sound toggle.
+- `src/game/actions/` — `ActionRegistry` (weighted, non-repeating) + themed
+  modules (`celebrations`, `stunts`, `chores`, `dockTrips`, `trapped`)
+  registered via `actions/index.js`; see that file for how to add one.
+- `src/game/core/SoundEngine.js` — synthesized audio (beeps, hum, empty-roar,
+  disco chiptune); `core/Sfx.js` — recorded clips (corgi barks) with synth
+  fallbacks; `core/Voice.js` — spoken announcements.
+- `src/game/fx/` — `Particles` (confetti/dust/sparkles/hearts), `Smears`,
+  `Cutaway` (undercarriage cam), `Splash` (title screen).
+- `src/game/ui/Hud.js` — icon-only dust-bin/mop pill, mode picker, sound
+  toggle (battery intentionally lives on the robot, not up here).
 
 ## Art pipeline
 
@@ -118,6 +135,7 @@ in the script comment if you switch:
 | Image editing (variants) | `google/gemini-3.1-flash-image-preview` | `scripts/edit_image.py` | `EDIT_MODEL` | Same model as generation so edited variants (e.g. dust-bag states) stay pixel-consistent with their base sprite. |
 | Voice lines (TTS) | `openai/gpt-audio`, voice `coral` | `scripts/gen_voice.py` | `VOICE_MODEL`, `VOICE_NAME` | Only audio-output chat model that works on OpenRouter (`gpt-4o-audio-preview` is not a valid OpenRouter ID — 400s). Requires `stream: true` + `format: pcm16`; script wraps the PCM deltas into WAV (24 kHz mono). |
 | Voice QA (transcription) | `google/gemini-3.5-flash` | `scripts/verify_voice.py` | `TRANSCRIBE_MODEL` | `gpt-audio` too often ignores the audio attachment and answers the prompt instead; Gemini transcribes reliably. Every clip must pass verbatim transcription (`scripts/voice_qa_loop.sh`) — the TTS model sometimes *replies* to a line ("Thank you!" → "You're welcome") instead of reading it. |
+| Sound effects | ElevenLabs sound generation | `scripts/gen_sfx.py` | `ELEVENLABS_API_KEY` (or `~/.codex/.env`) | Real recorded-quality effects (corgi barks, panting) that WebAudio synthesis can't fake; mp3s land in `public/assets/sfx/`, loaded by `core/Sfx.js` with synth fallbacks. |
 | Dev subagents | Claude Opus 4.8 | session tooling (Agent tool, `model: "opus"`) | — | Cheaper agents for small, scoped, disjoint-file tasks (HUD widgets, mechanical edits), each reviewed before integration. |
 
 Voice-line gotchas learned the hard way: quote the script line in «guillemets»
@@ -127,12 +145,13 @@ with `scripts/trim_voice.py`, and avoid phonetically ambiguous phrasing
 
 ## Asset checklist
 
-All shipping sprites and voice clips are declared in
+All shipping sprites, voice clips, and sound effects are declared in
 `src/game/core/assetManifest.js`. When adding or renaming an asset, put the final
-file in `public/assets/sprites/` or `public/assets/voice/`, add it to
-`SPRITE_MANIFEST` or `VOICE_LINES`, and reference the manifest key from code.
-Voice lines generated by `scripts/gen_voice.py` must also be listed in that
-script's `LINES` table.
+file in `public/assets/sprites/`, `public/assets/voice/`, or `public/assets/sfx/`,
+add it to `SPRITE_MANIFEST`, `VOICE_LINES`, or `SFX_CLIPS`, and reference the
+manifest key from code. Voice lines generated by `scripts/gen_voice.py` must also
+be listed in that script's `LINES` table, and sound effects generated by
+`scripts/gen_sfx.py` in its `SFX` table — the asset check enforces both.
 
 Before pushing asset changes, run:
 

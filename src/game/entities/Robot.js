@@ -4,7 +4,7 @@
 import { TAU, clamp, lerp, rand, pick, chance, dist, angleTo, angleDiff, angleApproach, damp, easeOutCubic } from '../core/math.js';
 import { roundRect } from '../world/Room.js';
 
-const R = 56; // robot radius in world units
+const R = 62; // robot radius in world units (sized so the on-body battery reads)
 
 export class Robot {
   constructor(game) {
@@ -112,9 +112,22 @@ export class Robot {
     this.seekDirt = null;
   }
 
+  // is he sitting at the dock with a maintenance problem? (red-blink signal)
+  dockAlerted() {
+    return ['docked', 'charge', 'empty', 'washpads'].includes(this.state) &&
+      this.game.dock.anyAlert();
+  }
+
   release() {
     this.controlled = false;
     this.trailMode = null;
+    if (this.parkAfterAction) {
+      // an action (the victory lap) parked us on the pad — settle in and run
+      // the normal service plan (empty, wash, charge) instead of heading out
+      this.parkAfterAction = false;
+      this.arriveAtDock();
+      return;
+    }
     if (this.stayDocked) {
       this.goDock('summon');
     } else if (this.bin >= 1 || this.battery <= 0.16) {
@@ -389,12 +402,14 @@ export class Robot {
           const px = Math.cos(this.heading + Math.PI / 2);
           const py = Math.sin(this.heading + Math.PI / 2);
           for (const side of [-1, 1]) {
-            g.smears.stamp(this.x + px * 30 * side, this.y + py * 30 * side, this.heading);
+            g.smears.stamp(this.x + px * 33 * side, this.y + py * 33 * side, this.heading);
           }
           if (chance(0.2)) g.smears.stamp(this.x + rand(-16, 16), this.y + rand(-16, 16), this.heading);
         }
       }
-      if (this.smearT <= 0) g.pendingMop = true; // the awful realization comes next
+      if (this.smearT <= 0 && g.actions.current?.name !== 'mopMode') {
+        g.pendingMop = true; // the awful realization comes next
+      }
     }
 
     // trail recording
@@ -457,6 +472,23 @@ export class Robot {
               if (chance(0.3)) g.sound.snore();
             }
           }
+          break;
+        }
+        // the dock needs a human (bag full / water tanks) → REFUSE to head
+        // out: sit here blinking red until somebody services it
+        if (g.dock.anyAlert()) {
+          if (!this.blockBuzzed) {
+            this.blockBuzzed = true;
+            g.sound.errorBuzz();
+            g.dock.beacon = 1.2;
+            this.setExpr('full', 3);
+          }
+          break;
+        }
+        this.blockBuzzed = false;
+        // pristine floor after the win party: stay home until somebody makes
+        // a mess (DirtSystem.spawn nudges dockedUndockT when that happens)
+        if (!g.roomDirty && g.dirt.items.length === 0 && g.smears.count === 0 && !g.pendingMop) {
           break;
         }
         this.dockedUndockT -= dt;
@@ -936,6 +968,9 @@ export class Robot {
     this.drawFaceAndLights(ctx);
     ctx.restore();
 
+    // battery gauge lives ON the robot — always upright, under the turret
+    this.drawBattery(ctx);
+
     // charge bolt above robot
     if (this.state === 'charge') {
       const t = g.time;
@@ -952,6 +987,42 @@ export class Robot {
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  drawBattery(ctx) {
+    const level = this.battery;
+    const charging = this.state === 'charge';
+    const low = level < 0.22 && !charging;
+    const blink = low ? 0.5 + 0.5 * Math.abs(Math.sin(this.game.time * 6)) : 1;
+    ctx.save();
+    ctx.translate(this.x, this.y - this.z + R * 0.56);
+    // dark backing plate so the gauge reads over any shell art or rotation
+    ctx.fillStyle = 'rgba(24, 30, 41, 0.92)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.lineWidth = 2.5;
+    roundRect(ctx, -27, -12, 54, 24, 9);
+    ctx.fill();
+    ctx.stroke();
+    // battery tip nub
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    roundRect(ctx, 28, -5, 5, 10, 2.5);
+    ctx.fill();
+    // the cell
+    const col = charging ? '#7ef29d' : level > 0.5 ? '#69d96e' : level > 0.22 ? '#ffb42e' : '#ff5d5d';
+    ctx.globalAlpha = blink;
+    ctx.fillStyle = col;
+    roundRect(ctx, -22, -7, Math.max(4, 44 * level), 14, 5);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    // charging bolt flashes on the gauge itself
+    if (charging) {
+      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = 0.75 + 0.25 * Math.sin(this.game.time * 10);
+      drawBolt(ctx, 0, 0, 10);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
   }
 
   drawMopPad(ctx) {
@@ -1067,22 +1138,23 @@ export class Robot {
     ctx.beginPath();
     ctx.arc(0, -2, 25, 0, TAU);
     ctx.fill();
+    const distress = this.trapped || this.dockAlerted();
     const trapBlink = Math.sin(this.wobbleT * 8) > 0;
     const ringColor =
-      this.trapped ? (trapBlink ? '#ff3b30' : '#6b1712')
+      distress ? (trapBlink ? '#ff3b30' : '#6b1712')
       : this.mopMode ? '#48b6ff'
       : this.state === 'charge' ? '#7ef29d'
       : this.bin > 0.88 ? '#ffb42e'
       : this.state === 'action' ? '#ff5d8f'
       : '#4cc9f0';
     ctx.strokeStyle = ringColor;
-    ctx.lineWidth = this.trapped ? 5 : 3;
-    ctx.globalAlpha = this.trapped ? (trapBlink ? 1 : 0.4) : 0.65 + 0.35 * Math.sin(this.wobbleT * 3);
+    ctx.lineWidth = distress ? 5 : 3;
+    ctx.globalAlpha = distress ? (trapBlink ? 1 : 0.4) : 0.65 + 0.35 * Math.sin(this.wobbleT * 3);
     ctx.beginPath();
     ctx.arc(0, -2, 28, 0, TAU);
     ctx.stroke();
     ctx.globalAlpha = 1;
-    if (this.trapped && trapBlink) {
+    if (distress && trapBlink) {
       // the status LED itself, blazing red so the SOS reads from anywhere
       ctx.fillStyle = '#ff3b30';
       ctx.shadowColor = 'rgba(255, 60, 40, 0.95)';

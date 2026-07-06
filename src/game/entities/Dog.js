@@ -182,6 +182,10 @@ export class Dog {
         if (d > 105) {
           this.x += Math.cos(this.heading) * 205 * dt;
           this.y += Math.sin(this.heading) * 205 * dt;
+        } else if (d < 80) {
+          // never clip into the robot — hold a respectful barking distance
+          this.x -= Math.cos(a) * 150 * dt;
+          this.y -= Math.sin(a) * 150 * dt;
         }
         this.barkT -= dt;
         if (this.barkT <= 0) {
