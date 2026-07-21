@@ -40,13 +40,9 @@ export class DirtSystem {
       dropV: 0,
     };
     this.items.push(d);
-    // anything landing on the floor re-arms the all-clean celebration — and
-    // rouses a robot that parked itself after the last win
+    // anything landing on the floor re-arms the all-clean celebration
+    // (a robot that parked itself after a win stays put until tapped awake)
     this.game.roomDirty = true;
-    const r = this.game.robot;
-    if (r && r.state === 'docked' && !r.stayDocked && !r.waitingForBag) {
-      r.dockedUndockT = Math.min(r.dockedUndockT, 0.8);
-    }
     return d;
   }
 

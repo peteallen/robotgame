@@ -39,6 +39,7 @@ export class Robot {
     this.bin = 0.2;
     this.suctionOn = false;
     this.stayDocked = false; // parked via dock tap, naps until tapped awake
+    this.dockAfterAction = false; // set by winParty: dock + stay when it ends
     this.napT = 0;
     this.backupBeepT = 0;
     this.seekT = 0;
@@ -121,12 +122,11 @@ export class Robot {
   release() {
     this.controlled = false;
     this.trailMode = null;
-    if (this.parkAfterAction) {
-      // an action (the victory lap) parked us on the pad — settle in and run
-      // the normal service plan (empty, wash, charge) instead of heading out
-      this.parkAfterAction = false;
-      this.arriveAtDock();
-      return;
+    if (this.dockAfterAction) {
+      // the win party ended: head home the normal way and stay parked
+      // until somebody taps the robot awake (same flow as a dock-tap park)
+      this.dockAfterAction = false;
+      this.stayDocked = true;
     }
     if (this.stayDocked) {
       this.goDock('summon');
@@ -486,11 +486,6 @@ export class Robot {
           break;
         }
         this.blockBuzzed = false;
-        // pristine floor after the win party: stay home until somebody makes
-        // a mess (DirtSystem.spawn nudges dockedUndockT when that happens)
-        if (!g.roomDirty && g.dirt.items.length === 0 && g.smears.count === 0 && !g.pendingMop) {
-          break;
-        }
         this.dockedUndockT -= dt;
         if (this.dockedUndockT <= 0) {
           this.state = 'leaving';

@@ -76,10 +76,10 @@ browser. Sound starts after the first tap (browser autoplay rules).
 - **Clean the whole floor → victory party.** Dirt only appears when someone
   makes it (tap the floor, shake the plant for falling leaves, launch toys,
   pull socks out, poke the dog) — nothing falls on its own. When the last
-  speck, sock and toy is gone: "The room is all clean!", a proud pirouette,
-  then a full VICTORY LAP around the room trailing rainbow with fireworks
-  popping overhead — and then he drives home, backs into the dock, services
-  himself, and stays parked until somebody makes a brand-new mess.
+  speck, sock and toy is gone: "The room is all clean!", fireworks, and a
+  proud pirouette with confetti — then he announces "Returning to dock",
+  drives home, backs in, services himself, and NAPS on the pad until you tap
+  him awake (new messes wait patiently for him to be started again).
 - **Battery gauge rides on the robot itself** (always upright, blinks red
   when low, fills green while fast-charging on the dock).
 - **Tap the dog, TV, plant, toy box, couch** — everything does something.
