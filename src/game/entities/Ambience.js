@@ -5,14 +5,8 @@ export class Ambience {
   constructor(game) {
     this.game = game;
     this.t = 0;
-    const w = game.room.window;
-    // beam quad from window down-right onto the floor
-    this.beam = {
-      x1: w.x + 10, x2: w.x + w.w - 10, // top edge at wall base
-      y1: 170,
-      x3: w.x + 250, x4: w.x + w.w + 330, // bottom edge on floor
-      y2: 720,
-    };
+    this.roomId = null;
+    this.beam = null;
     this.motes = [];
     for (let i = 0; i < 22; i++) {
       this.motes.push({
@@ -22,10 +16,32 @@ export class Ambience {
         ph: rand(0, TAU),
       });
     }
+    this.syncRoom();
+  }
+
+  syncRoom() {
+    const room = this.game.room;
+    if (!room || this.roomId === room.id) return;
+    this.roomId = room.id;
+    const w = room.window;
+    if (!w) {
+      this.beam = null;
+      return;
+    }
+    // Beam quad from this room's window down-right onto its floor. A room
+    // without a window has no sunbeam rather than inheriting stale geometry.
+    this.beam = {
+      x1: w.x + 10, x2: w.x + w.w - 10,
+      y1: 170,
+      x3: w.x + 250, x4: w.x + w.w + 330,
+      y2: 720,
+    };
   }
 
   update(dt) {
+    this.syncRoom();
     this.t += dt;
+    if (!this.beam) return;
     for (const m of this.motes) {
       m.v += m.sp * dt * 6;
       if (m.v > 1) {
@@ -49,6 +65,7 @@ export class Ambience {
 
   draw(ctx) {
     const b = this.beam;
+    if (!b) return;
     const pulse = 0.1 + 0.03 * Math.sin(this.t * 0.5);
     const g = ctx.createLinearGradient(0, b.y1, 0, b.y2);
     g.addColorStop(0, `rgba(255, 236, 170, ${pulse * 1.6})`);

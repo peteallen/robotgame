@@ -7,7 +7,8 @@ Process raw generated art into game-ready sprites.
 - Despills key color from edge pixels and feathers the alpha.
 - Trims to content, pads to the aspect ratio the game draws each sprite at.
 - Special cases: robot is rotated 180 (generated front-down), room is
-  center-cropped to the 1680x1050 world.
+  center-cropped to the 1680x1050 world, and the kitchen room is emitted as an
+  optimized WebP so it does not delay first launch.
 """
 from collections import deque
 from pathlib import Path
@@ -57,6 +58,9 @@ SPRITES = {
     "toy_ball": (1.0, 220, "green"),
     "toy_block": (1.0, 220, "green"),
     "disco_ball": (1.0, 320, "green"),
+    "kitchen_island": (1.45, 680, "magenta"),
+    "kitchen_fridge": (0.72, 620, "magenta"),
+    "kitchen_bin": (0.78, 380, "green"),
 }
 
 
@@ -132,10 +136,10 @@ def trim_pad(img: Image.Image, aspect: float, max_side: int, pad_frac=0.03) -> I
     return canvas
 
 
-def process_room():
-    src = RAW / "room.png"
+def process_room(name: str):
+    src = RAW / f"{name}.png"
     if not src.exists():
-        print("room: missing, skip")
+        print(f"{name}: missing, skip")
         return
     img = Image.open(src).convert("RGB")
     tw, th = 1680, 1050
@@ -143,17 +147,26 @@ def process_room():
     img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
     x = (img.width - tw) // 2
     img = img.crop((x, 0, x + tw, th))
-    img.save(OUT / "room.png", optimize=True)
-    print(f"room: OK {img.size}")
+    if name == "kitchen_room":
+        img.save(OUT / f"{name}.webp", format="WEBP", quality=90, method=6)
+        print(f"{name}: OK {img.size} webp")
+    else:
+        img.save(OUT / f"{name}.png", optimize=True)
+        print(f"{name}: OK {img.size}")
 
 
 def main():
     only = sys.argv[1:] or None
-    process_room() if (only is None or "room" in only) else None
+    for room_name in ("room", "kitchen_room"):
+        if only is None or room_name in only:
+            process_room(room_name)
     for name, (aspect, max_side, key) in SPRITES.items():
         if only and name not in only:
             continue
-        src = RAW / f"{name}.png"
+        # Built-in image generation keeps its original removable background as
+        # `*.chroma.png`; consume that authoritative source when present.
+        chroma_src = RAW / f"{name}.chroma.png"
+        src = chroma_src if chroma_src.exists() else RAW / f"{name}.png"
         if not src.exists():
             print(f"{name}: missing, skip")
             continue

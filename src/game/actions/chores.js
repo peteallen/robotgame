@@ -3,21 +3,77 @@
 import { TAU, rand, pick, clamp, lerp, dist, angleTo, easeOutCubic } from '../core/math.js';
 import { drawArm, drawSockShape, drawToyShape, isTidyableToy } from './helpers.js';
 
+function roomFurniture(g, name) {
+  return g.room?.getFurniture?.(name) ??
+    g.room?.furniture?.find((item) => item.name === name) ?? null;
+}
+
+function basketTargets(room, basket) {
+  const b = room.bounds;
+  return {
+    approach: {
+      x: clamp(basket.cx - Math.min(25, basket.w * 0.15), b.minX, b.maxX),
+      y: clamp(basket.cy + basket.h / 2 + 72, b.minY, b.maxY),
+    },
+    face: { x: basket.cx, y: basket.cy + 12 },
+    drop: { x: basket.cx, y: basket.cy - basket.h * 0.19 },
+    effect: { x: basket.cx, y: basket.cy - basket.h * 0.16 },
+  };
+}
+
+function toyboxTargets(room, toybox) {
+  const b = room.bounds;
+  const foot = toybox.foot;
+  const belowY = foot ? foot.y + foot.h + 70 : toybox.cy + toybox.h / 2 + 45;
+  const candidates = foot
+    ? [
+        { x: foot.x - 70, y: belowY },
+        { x: foot.x + foot.w + 70, y: belowY },
+        { x: toybox.cx, y: belowY + 35 },
+      ]
+    : [{ x: toybox.cx - toybox.w / 2 - 25, y: belowY }];
+  const approach = candidates.find((point) =>
+    point.x >= b.minX && point.x <= b.maxX && point.y >= b.minY && point.y <= b.maxY &&
+    room.isFree(point.x, point.y, 70, { solidTable: true })
+  ) ?? candidates[0];
+  return {
+    approach: {
+      x: clamp(approach.x, b.minX, b.maxX),
+      y: clamp(approach.y, b.minY, b.maxY),
+    },
+    face: { x: toybox.cx, y: toybox.cy - 20 },
+    drop: { x: toybox.cx - 7, y: toybox.cy - toybox.h * 0.34 },
+    effect: { x: toybox.cx, y: toybox.cy - toybox.h * 0.27 },
+  };
+}
+
 // --------------------------------------------------- sock grab (Z70 arm!) ---
 export const SockGrab = {
   name: 'sockGrab',
   weight: 10,
   maxDur: 32,
+  canRun: (g) => !!roomFurniture(g, 'basket'),
   start(g) {
     const r = g.robot;
+    const basket = roomFurniture(g, 'basket');
+    if (!basket) {
+      this.finished = true;
+      return;
+    }
+    const roomId = r.roomId ?? g.room?.id ?? 'living';
+    const basketTarget = basketTargets(g.room, basket);
     // a sock already on the floor (dragged/popped from the basket) comes first
     const floorSock = g.dirt.find((d) => d.type === 'sock' && d.drop <= 0);
     if (floorSock) {
       this.state = {
         phase: 'approach',
         t: 0,
+        roomId,
+        basketTarget,
         sock: { x: floorSock.x, y: floorSock.y, z: 0, tint: floorSock.tint },
         item: floorSock,
+        sockOwner: 'floor',
+        pickedUp: false,
         arm: { ext: 0, claw: 1, tx: floorSock.x, ty: floorSock.y, holding: false },
         dropZ: 0,
       };
@@ -35,12 +91,18 @@ export const SockGrab = {
         break;
       }
     }
-    if (!p) p = { x: 840, y: 850 };
+    if (!p) p = g.room.randomFloorPoint(60);
     this.state = {
       phase: 'flyin',
       t: 0,
+      roomId,
+      basketTarget,
       sock: { x: p.x, y: p.y, z: 700, tint: pick(['#ff8fa3', '#8fd7ff', '#b8f2a4', '#ffe08a']) },
       item: null,
+      // This sock does not belong to the floor yet. Keep its ownership
+      // explicit so an interruption can materialize it exactly once.
+      sockOwner: 'action',
+      pickedUp: false,
       arm: { ext: 0, claw: 1, tx: p.x, ty: p.y, holding: false },
       dropZ: 0,
     };
@@ -89,10 +151,12 @@ export const SockGrab = {
         st.arm.claw = 1 - Math.min(1, st.t / 0.3);
         if (st.t > 0.35) {
           st.arm.holding = true;
+          st.pickedUp = true;
           if (st.item) {
             // the floor sock is in the claw now — the action draws it from here
             g.dirt.remove(st.item);
             st.item = null;
+            st.sockOwner = 'action';
           }
           st.phase = 'lift';
           st.t = 0;
@@ -113,16 +177,18 @@ export const SockGrab = {
       case 'carry': {
         // carrying a sock overhead — the tabletop counts as solid so the
         // robot walks AROUND it instead of ducking underneath
-        if (r.driveTo(1520, 445, 195, 45, { solidTable: true })) {
+        const target = st.basketTarget.approach;
+        if (r.driveTo(target.x, target.y, 195, 45, { solidTable: true })) {
           st.phase = 'deposit';
           st.t = 0;
         }
         break;
       }
       case 'deposit': {
-        const done = r.faceAngle(angleTo(r.x, r.y, 1545, 300));
-        st.arm.tx = 1545;
-        st.arm.ty = 255;
+        const target = st.basketTarget;
+        const done = r.faceAngle(angleTo(r.x, r.y, target.face.x, target.face.y));
+        st.arm.tx = target.drop.x;
+        st.arm.ty = target.drop.y;
         if (done) {
           st.arm.ext = Math.min(1, st.arm.ext + dt / 0.7);
           if (st.arm.ext >= 1) {
@@ -139,11 +205,13 @@ export const SockGrab = {
         st.dropZ -= 350 * dt;
         if (st.dropZ <= -20 && !st.released) {
           st.released = true;
+          st.sockOwner = 'basket';
           g.addBasketSock(st.sock.tint); // it lives in the basket now!
           g.sound.pop();
           g.sound.dockChime();
-          g.particles.confettiBurst(1545, 260, 18);
-          g.particles.sparkle(1545, 250, 6);
+          const target = st.basketTarget.effect;
+          g.particles.confettiBurst(target.x, target.y, 18, st.roomId);
+          g.particles.sparkle(target.x, target.y - 10, 6, st.roomId);
         }
         if (st.t > 0.6) {
           st.phase = 'retract';
@@ -178,10 +246,20 @@ export const SockGrab = {
     };
   },
   end(g) {
-    // interrupted mid-carry (mop emergency!): drop the sock right here
+    // An interruption transfers an action-owned sock back to the floor. The
+    // ownership change happens before spawning so even a repeated end() call
+    // cannot duplicate it. arm.holding is only a visual claw state: it is
+    // deliberately false while the sock visibly drops into the basket.
     const st = this.state;
-    if (st?.arm?.holding && !st.released) {
-      g.dirt.spawn('sock', g.robot.x, clamp(g.robot.y + 46, g.room.bounds.minY, g.room.bounds.maxY + 30), { tint: st.sock.tint });
+    if (st?.sockOwner === 'action') {
+      st.sockOwner = 'floor';
+      st.arm.holding = false;
+      const x = st.pickedUp ? g.robot.x : st.sock.x;
+      const y = st.pickedUp ? g.robot.y + 46 : st.sock.y;
+      st.item = g.dirt.spawn('sock', x, clamp(y, g.room.bounds.minY, g.room.bounds.maxY + 30), {
+        tint: st.sock.tint,
+        roomId: g.robot.roomId ?? st.roomId,
+      });
     }
   },
   drawOver(g, ctx) {
@@ -218,16 +296,24 @@ export const TidyToy = {
   name: 'tidyToy',
   weight: 7,
   maxDur: 30,
-  canRun: (g) => g.dirt.items.some(isTidyableToy),
+  canRun: (g) => {
+    const roomId = g.robot.roomId ?? g.room?.id ?? 'living';
+    return !!roomFurniture(g, 'toybox') &&
+      g.dirt.items.some((item) => item.roomId === roomId && isTidyableToy(item));
+  },
   start(g) {
-    const toy = g.dirt.items.find(isTidyableToy);
-    if (!toy) {
+    const toybox = roomFurniture(g, 'toybox');
+    const roomId = g.robot.roomId ?? g.room?.id ?? 'living';
+    const toy = g.dirt.items.find((item) => item.roomId === roomId && isTidyableToy(item));
+    if (!toybox || !toy) {
       this.finished = true;
       return;
     }
     this.state = {
       phase: 'approach',
       t: 0,
+      roomId,
+      toyboxTarget: toyboxTargets(g.room, toybox),
       toy,
       held: null, // {type, tint, rot} once grabbed
       arm: { ext: 0, claw: 1, tx: toy.x, ty: toy.y },
@@ -291,16 +377,18 @@ export const TidyToy = {
       }
       case 'carry': {
         // toybox approach point (from the open floor below-left)
-        if (r.driveTo(1395, 705, 190, 45, { solidTable: true })) {
+        const target = st.toyboxTarget.approach;
+        if (r.driveTo(target.x, target.y, 190, 45, { solidTable: true })) {
           st.phase = 'deposit';
           st.t = 0;
         }
         break;
       }
       case 'deposit': {
-        const done = r.faceAngle(angleTo(r.x, r.y, 1535, 590));
-        st.arm.tx = 1528;
-        st.arm.ty = 545;
+        const target = st.toyboxTarget;
+        const done = r.faceAngle(angleTo(r.x, r.y, target.face.x, target.face.y));
+        st.arm.tx = target.drop.x;
+        st.arm.ty = target.drop.y;
         if (done) {
           st.arm.ext = Math.min(1, st.arm.ext + dt / 0.6);
           if (st.arm.ext >= 1) {
@@ -319,8 +407,9 @@ export const TidyToy = {
           st.held = null;
           g.sound.boing();
           g.sound.dockChime();
-          g.particles.sparkle(1535, 555, 8);
-          g.particles.confettiBurst(1535, 560, 12);
+          const target = st.toyboxTarget.effect;
+          g.particles.sparkle(target.x, target.y, 8, st.roomId);
+          g.particles.confettiBurst(target.x, target.y + 5, 12, st.roomId);
         }
         if (st.t > 0.5) {
           st.phase = 'retract';
@@ -350,7 +439,10 @@ export const TidyToy = {
     // interrupted while holding a toy: it tumbles to the floor
     const st = this.state;
     if (st?.held) {
-      const t = g.dirt.spawn(st.held.type, g.robot.x, g.robot.y + 40, { tint: st.held.tint });
+      const t = g.dirt.spawn(st.held.type, g.robot.x, g.robot.y + 40, {
+        tint: st.held.tint,
+        roomId: g.robot.roomId ?? st.roomId,
+      });
       t.vx = rand(-70, 70);
       t.vy = rand(30, 90);
     }

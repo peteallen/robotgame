@@ -2,7 +2,7 @@
 // Real-robot behaviors: straight-line wander with bump-and-turn, spiral
 // cleaning, wall following, docking to auto-empty + fast-charge.
 import { TAU, clamp, lerp, rand, pick, chance, dist, angleTo, angleDiff, angleApproach, damp, easeOutCubic } from '../core/math.js';
-import { roundRect } from '../world/Room.js';
+import { Room, roundRect } from '../world/Room.js';
 
 const R = 62; // robot radius in world units (sized so the on-body battery reads)
 
@@ -17,6 +17,11 @@ export class Robot {
     this.speed = 0;
     this.targetSpeed = 0;
     this.turnRate = 3.2;
+    // The robot, rather than the currently drawn scene, is the authoritative
+    // owner of its location. House transitions update this at their midpoint.
+    this.roomId = 'living';
+    this.roomTravel = null;
+    this.targetRoomId = null;
 
     this.state = 'docked';
     this.stateT = 0;
@@ -29,6 +34,11 @@ export class Robot {
     this.bump = null;
     this.pauseT = 0;
     this.seekDirt = null;
+    this.seekPathTarget = null;
+    this.seekPath = null;
+    this.seekPathIndex = 0;
+    this.seekWaypointBest = Infinity;
+    this.seekWaypointStallT = 0;
     this.seekCheckT = 1;
     this.chirpT = rand(5, 10);
     this.stuckT = 0;
@@ -47,6 +57,7 @@ export class Robot {
     // the poopocalypse
     this.smearT = 0; // seconds of oblivious mess-spreading left
     this.smearDist = 0;
+    this.smearRoomId = null;
     this.mopMode = false;
     this.fateTarget = null; // disguised waypoint that leads through... something
 
@@ -107,6 +118,10 @@ export class Robot {
   }
 
   takeControl() {
+    // An emergency action can be forced between any two frames. Cancel a
+    // doorway trip through House first so the new action never inherits a
+    // half-owned transition that it cannot advance.
+    if (this.roomTravel) this.abortRoomTravel();
     this.controlled = true;
     this.state = 'action';
     this.bump = null;
@@ -154,7 +169,7 @@ export class Robot {
       return false;
     }
     const want = angleTo(this.x, this.y, tx, ty);
-    const room = this.game.room;
+    const room = this.roomFor();
     // probe slightly LARGER than the physics radius so "probe says go,
     // physics says no" pinning can't happen
     const free = (a, len) =>
@@ -180,7 +195,7 @@ export class Robot {
 
   // find an open direction and commit to it briefly
   startEscape() {
-    const room = this.game.room;
+    const room = this.roomFor();
     for (let i = 0; i < 8; i++) {
       const a = this.heading + Math.PI + (i - 4) * 0.7 + rand(-0.2, 0.2);
       if (room.isFree(this.x + Math.cos(a) * 130, this.y + Math.sin(a) * 130, R + 5)) {
@@ -197,21 +212,638 @@ export class Robot {
     return Math.abs(angleDiff(this.heading, a)) < 0.06;
   }
 
+  roomFor(roomId = this.roomId) {
+    return this.game.house?.room?.(roomId) ?? this.game.room;
+  }
+
+  isRoomTraveling() {
+    return this.roomTravel !== null;
+  }
+
+  // Public entry point for doorway taps and the minimap. Controlled actions
+  // use travelToRoomStep() instead, so a room request never cancels an action.
+  requestRoom(roomId, reason = 'manual') {
+    const house = this.game.house;
+    if (!house?.room?.(roomId)) return roomId === this.roomId;
+    // A deliberate dock nap has one wake-up affordance: tapping the robot.
+    // Room controls may choose a destination only after wake() clears this flag;
+    // the dock-owned route home remains allowed while that nap is being set up.
+    if (this.stayDocked && reason !== 'dock') return false;
+    if (!this.roomTravel && roomId === this.roomId) return true;
+    if (this.controlled) return false;
+    if (this.roomTravel) return this.roomTravel.targetRoomId === roomId;
+    if (this.smearT > 0 && reason !== 'dock') return false;
+    if (this.game.dog?.roomId === this.roomId && this.game.dog.pooping?.()) {
+      return false;
+    }
+
+    // Finishing dock service and backing onto the pad are deliberately not
+    // interruptible. An alerted dock also keeps its existing refusal behavior.
+    const dockBusy = ['align', 'empty', 'charge', 'washpads'].includes(this.state);
+    if (dockBusy && reason !== 'dock') return false;
+    if (this.state === 'docked' && this.game.dock.anyAlert()) {
+      this.game.dock.beacon = 1.2;
+      this.game.sound.errorBuzz();
+      this.setExpr('full', 3);
+      return false;
+    }
+    if (this.state === 'godock' && reason !== 'dock') return false;
+
+    let resumeState = this.state;
+    if (resumeState === 'docked' || resumeState === 'leaving') resumeState = 'clean';
+    if (!['clean', 'seek', 'godock'].includes(resumeState)) resumeState = 'clean';
+    const resume = {
+      state: resumeState,
+      cleanMode: this.cleanMode,
+      modeTimer: this.modeTimer,
+      seekDirt: this.seekDirt,
+      seekT: this.seekT,
+      fateTarget: this.fateTarget,
+    };
+
+    if (this.state === 'docked') {
+      this.stayDocked = false;
+      this.game.sound.undockChime();
+    }
+    return this.beginRoomTravel(roomId, { owner: 'state', reason, resume });
+  }
+
+  // Controlled dock and cleanup actions call this once per frame and pause
+  // their own local phase until it returns true.
+  travelToRoomStep(targetRoomId, dt) {
+    if (!this.roomTravel && this.roomId === targetRoomId) return true;
+    if (!this.roomTravel) {
+      if (!this.beginRoomTravel(targetRoomId, { owner: 'controlled', reason: 'action' })) {
+        return false;
+      }
+    } else if (this.roomTravel.targetRoomId !== targetRoomId) {
+      return false;
+    }
+    return this.updateRoomTravel(dt);
+  }
+
+  beginRoomTravel(targetRoomId, { owner, reason, resume = null }) {
+    const house = this.game.house;
+    if (!house?.room?.(targetRoomId) || house.transition || this.roomTravel ||
+        targetRoomId === this.roomId) return false;
+    if (this.game.dog?.roomId === this.roomId && this.game.dog.pooping?.()) return false;
+    const portal = house.portal?.(this.roomId, targetRoomId) ?? this.roomFor()?.portal?.(targetRoomId);
+    if (!portal) return false;
+
+    const path = this.planRoomTravelPath(
+      portal.approach.x,
+      portal.approach.y,
+      { ignoreDock: true },
+    );
+    if (!path?.length) return false;
+
+    // A manual or cleaning trip should not carry a nearly-finished suction
+    // animation across the doorway. Leave that item in the source room so the
+    // final pickup, and any resulting victory, still belongs to the room where
+    // cleaning actually completes. Automatic dock trips keep their in-flight
+    // pickup because the victory watchdog may intentionally preempt them.
+    if (owner === 'state' && reason !== 'dock') {
+      for (const item of this.game.dirt.items) {
+        if (item.roomId !== this.roomId || !item.sucking) continue;
+        item.sucking = false;
+        item.suckT = 0;
+      }
+    }
+
+    this.roomTravel = {
+      owner,
+      reason,
+      fromRoomId: this.roomId,
+      targetRoomId,
+      portalId: portal.id,
+      phase: 'approach',
+      resume,
+      path,
+      pathIndex: 0,
+      waypointBest: Infinity,
+      waypointStallT: 0,
+    };
+    this.targetRoomId = targetRoomId;
+    this.bump = null;
+    this.escape = null;
+    this.speed = 0;
+    this.targetSpeed = 0;
+    this.seekDirt = null;
+    if (this.fateTarget) this.clearFateTarget();
+    this.prepareDogForTravel();
+    if (owner === 'state') {
+      this.state = 'travel';
+      this.stateT = 0;
+    }
+    return true;
+  }
+
+  // Doorway travel needs a stronger guarantee than ordinary wandering. A
+  // small deterministic grid search finds a collision-checked corridor around
+  // large furniture, then simplifies it into a handful of visible waypoints.
+  // This prevents local steering from orbiting the kitchen island forever.
+  planRoomTravelPath(tx, ty, opts = {}) {
+    const room = this.roomFor();
+    const start = { x: this.x, y: this.y };
+    const goal = { x: tx, y: ty };
+    // A physically clear direct line is safe even when it passes through a
+    // deliberately snug authored corridor. Detours use a larger margin.
+    if (this.travelSegmentFree(room, start, goal, opts, R + 2)) return [goal];
+
+    const spacing = 56;
+    const clearance = R + 8;
+    const nodes = new Map();
+    const bounds = room.bounds;
+    const xValues = axisValues(bounds.minX, bounds.maxX, spacing, [start.x, goal.x]);
+    const yValues = axisValues(bounds.minY, bounds.maxY, spacing, [start.y, goal.y]);
+    for (let row = 0; row < yValues.length; row++) {
+      const y = yValues[row];
+      for (let col = 0; col < xValues.length; col++) {
+        const x = xValues[col];
+        if (!room.isFree(x, y, clearance, opts)) continue;
+        const key = `${col},${row}`;
+        nodes.set(key, { key, col, row, x, y });
+      }
+    }
+
+    const connectorRadius = spacing * 2.6;
+    let starts = [...nodes.values()].filter((node) =>
+      dist(start.x, start.y, node.x, node.y) <= connectorRadius &&
+      this.travelSegmentFree(room, start, node, opts)
+    );
+    // Authored edge pockets can fall between grid rows. If that happens, use
+    // any physically visible node rather than falling back to the looping
+    // local planner. This connector alone uses the physics radius so a robot
+    // already sitting in a snug but valid corridor can drive outward into the
+    // grid's more generous clearance.
+    if (!starts.length) {
+      starts = [...nodes.values()].filter((node) =>
+        this.travelSegmentFree(room, start, node, opts, R)
+      );
+    }
+    if (!starts.length) return null;
+
+    const open = [];
+    const costs = new Map();
+    const parents = new Map();
+    for (const node of starts) {
+      const cost = dist(start.x, start.y, node.x, node.y);
+      costs.set(node.key, cost);
+      parents.set(node.key, null);
+      open.push({ node, cost, score: cost + dist(node.x, node.y, goal.x, goal.y) });
+    }
+
+    let reached = null;
+    while (open.length) {
+      open.sort((a, b) => a.score - b.score);
+      const current = open.shift();
+      if (current.cost !== costs.get(current.node.key)) continue;
+      if (this.travelSegmentFree(room, current.node, goal, opts)) {
+        reached = current.node;
+        break;
+      }
+
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const next = nodes.get(`${current.node.col + dx},${current.node.row + dy}`);
+          if (!next || !this.travelSegmentFree(room, current.node, next, opts)) continue;
+          const nextCost = current.cost + dist(current.node.x, current.node.y, next.x, next.y);
+          if (nextCost >= (costs.get(next.key) ?? Infinity)) continue;
+          costs.set(next.key, nextCost);
+          parents.set(next.key, current.node.key);
+          open.push({
+            node: next,
+            cost: nextCost,
+            score: nextCost + dist(next.x, next.y, goal.x, goal.y),
+          });
+        }
+      }
+    }
+    if (!reached) return null;
+
+    const gridPath = [];
+    for (let node = reached; node; node = nodes.get(parents.get(node.key))) {
+      gridPath.push({ x: node.x, y: node.y });
+    }
+    gridPath.reverse();
+    const raw = [start, ...gridPath, goal];
+    const simplified = [];
+    let fromIndex = 0;
+    while (fromIndex < raw.length - 1) {
+      let nextIndex = raw.length - 1;
+      while (nextIndex > fromIndex + 1 &&
+          !this.travelSegmentFree(room, raw[fromIndex], raw[nextIndex], opts)) {
+        nextIndex--;
+      }
+      simplified.push(raw[nextIndex]);
+      fromIndex = nextIndex;
+    }
+    return simplified;
+  }
+
+  clearSeekPath() {
+    this.seekPathTarget = null;
+    this.seekPath = null;
+    this.seekPathIndex = 0;
+    this.seekWaypointBest = Infinity;
+    this.seekWaypointStallT = 0;
+  }
+
+  planSeekPath(target) {
+    const room = this.roomFor();
+    if (!target || !room) return null;
+    const candidates = [{ x: target.x, y: target.y }];
+    const towardRobot = angleTo(target.x, target.y, this.x, this.y);
+    // Floor specks are intentionally allowed closer to furniture than the
+    // robot's body. The suction mouth reaches well beyond the chassis, so plan
+    // to a free point around the speck and let the final short approach pull it
+    // in without trying to park the robot on top of it.
+    for (const radius of [72, 88]) {
+      for (let index = 0; index < 16; index++) {
+        const angle = towardRobot + index * Math.PI / 8;
+        candidates.push({
+          x: target.x + Math.cos(angle) * radius,
+          y: target.y + Math.sin(angle) * radius,
+        });
+      }
+    }
+
+    let best = null;
+    for (const candidate of candidates) {
+      if (!room.isFree(candidate.x, candidate.y, R + 8)) continue;
+      const path = this.planRoomTravelPath(candidate.x, candidate.y);
+      if (!path?.length) continue;
+      let length = 0;
+      let previous = this;
+      for (const point of path) {
+        length += dist(previous.x, previous.y, point.x, point.y);
+        previous = point;
+      }
+      if (!best || length < best.length) best = { path, length };
+    }
+    return best?.path ?? null;
+  }
+
+  followSeekPath(target, dt) {
+    if (this.seekPathTarget !== target) {
+      this.clearSeekPath();
+      this.seekPathTarget = target;
+      this.seekPath = this.planSeekPath(target);
+    }
+    if (!this.seekPath || this.seekPathIndex >= this.seekPath.length) return false;
+
+    const waypoint = this.seekPath[this.seekPathIndex];
+    const waypointDistance = dist(this.x, this.y, waypoint.x, waypoint.y);
+    if (waypointDistance < this.seekWaypointBest - 0.5) {
+      this.seekWaypointBest = waypointDistance;
+      this.seekWaypointStallT = 0;
+    } else {
+      this.seekWaypointStallT += dt;
+    }
+    if (this.seekWaypointStallT > 2.2) {
+      this.seekPath = this.planSeekPath(target);
+      this.seekPathIndex = 0;
+      this.seekWaypointBest = Infinity;
+      this.seekWaypointStallT = 0;
+      this.escape = null;
+      return !!this.seekPath;
+    }
+
+    const lastWaypoint = this.seekPathIndex === this.seekPath.length - 1;
+    if (this.driveTravelWaypoint(
+      waypoint.x,
+      waypoint.y,
+      lastWaypoint ? 170 : 155,
+      lastWaypoint ? 14 : 20,
+    )) {
+      this.seekPathIndex++;
+      this.seekWaypointBest = Infinity;
+      this.seekWaypointStallT = 0;
+    }
+    return true;
+  }
+
+  travelSegmentFree(room, from, to, opts = {}, clearance = R + 8) {
+    if (!room.isFree(from.x, from.y, clearance, opts) ||
+        !room.isFree(to.x, to.y, clearance, opts)) {
+      return false;
+    }
+
+    // Room collision is built from axis-aligned furniture footprints. Check
+    // the entire line against those shapes, not only sampled positions. This
+    // catches arbitrarily short collision intervals where a route just grazes
+    // a rounded, radius-inflated furniture corner.
+    const obstacles = [];
+    for (const furniture of room.furniture ?? []) {
+      if (opts.ignoreCouch && furniture.name === 'couch') continue;
+      if (furniture.foot) obstacles.push(furniture.foot);
+      if (furniture.legs) obstacles.push(...furniture.legs);
+    }
+    const tableSolid = room.tableSolidFootprint ?? Room.TABLE_SOLID;
+    if (opts.solidTable && tableSolid) obstacles.push(tableSolid);
+    const dock = room.dockForRoom?.();
+    if (!opts.ignoreDock && dock?.footprint) obstacles.push(dock.footprint);
+    const clearanceSq = clearance * clearance;
+    for (const obstacle of obstacles) {
+      if (segmentRectDistanceSquared(from, to, obstacle) < clearanceSq) return false;
+    }
+
+    const length = dist(from.x, from.y, to.x, to.y);
+    // Keep the validation stride below the robot's normal per-frame movement.
+    // A coarse sample can hop over the very short collision interval created
+    // by a line grazing an inflated furniture corner, even though movement
+    // physics catches that interval and leaves the robot pinned there.
+    const steps = Math.max(1, Math.ceil(length / 4));
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      if (!room.isFree(lerp(from.x, to.x, t), lerp(from.y, to.y, t), clearance, opts)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  driveTravelWaypoint(tx, ty, speed = 165, arrive = 20) {
+    const distance = dist(this.x, this.y, tx, ty);
+    if (distance < arrive) {
+      this.speed = 0;
+      this.targetSpeed = 0;
+      return true;
+    }
+    const want = angleTo(this.x, this.y, tx, ty);
+    this.heading = angleApproach(this.heading, want, this.turnRate * 1.7 * this.game.dt);
+    const misalign = Math.abs(angleDiff(this.heading, want));
+    // Pivot before committing to a pre-validated segment. Carrying residual
+    // speed around a sharp waypoint corner can otherwise cut into furniture.
+    this.targetSpeed = misalign > 0.28
+      ? 0
+      : speed * clamp(1.05 - misalign * 0.8, 0.55, 1);
+    return false;
+  }
+
+  updateRoomTravel(dt) {
+    const travel = this.roomTravel;
+    const house = this.game.house;
+    if (!travel || !house) return false;
+
+    const portal = house.portal?.(travel.fromRoomId, travel.portalId)
+      ?? house.room?.(travel.fromRoomId)?.portal?.(travel.portalId);
+    if (!portal) {
+      this.abortRoomTravel();
+      return false;
+    }
+
+    if (travel.phase === 'approach') {
+      if (!travel.path?.length || travel.pathIndex >= travel.path.length) {
+        const path = this.planRoomTravelPath(
+          portal.approach.x,
+          portal.approach.y,
+          { ignoreDock: true },
+        );
+        if (!path?.length) {
+          this.abortRoomTravel();
+          return false;
+        }
+        travel.path = path;
+        travel.pathIndex = 0;
+        travel.waypointBest = Infinity;
+        travel.waypointStallT = 0;
+      }
+      const waypoint = travel.path[travel.pathIndex] ?? portal.approach;
+      const waypointDistance = dist(this.x, this.y, waypoint.x, waypoint.y);
+      if (waypointDistance < travel.waypointBest - 0.5) {
+        travel.waypointBest = waypointDistance;
+        travel.waypointStallT = 0;
+      } else {
+        travel.waypointStallT += dt;
+      }
+      if (travel.waypointStallT > 2.2) {
+        const path = this.planRoomTravelPath(
+          portal.approach.x,
+          portal.approach.y,
+          { ignoreDock: true },
+        );
+        if (!path?.length) {
+          this.abortRoomTravel();
+          return false;
+        }
+        travel.path = path;
+        travel.pathIndex = 0;
+        travel.waypointBest = Infinity;
+        travel.waypointStallT = 0;
+        this.escape = null;
+        return false;
+      }
+
+      const lastWaypoint = travel.pathIndex === travel.path.length - 1;
+      if (this.driveTravelWaypoint(
+        waypoint.x,
+        waypoint.y,
+        lastWaypoint ? 180 : 165,
+        lastWaypoint ? 28 : 24,
+      )) {
+        travel.pathIndex++;
+        travel.waypointBest = Infinity;
+        travel.waypointStallT = 0;
+        if (travel.pathIndex >= travel.path.length) travel.phase = 'face';
+      }
+      return false;
+    }
+
+    if (travel.phase === 'face') {
+      if (!this.faceAngle(portal.angle, 4)) return false;
+      this.speed = 0;
+      this.targetSpeed = 0;
+      house.beginTransition?.(travel.targetRoomId, {
+        fromRoomId: travel.fromRoomId,
+        portalId: travel.portalId,
+        duration: 0.9,
+        robot: this,
+      });
+      if (!house.transition) {
+        this.abortRoomTravel();
+        return false;
+      }
+      travel.phase = 'cross';
+      return false;
+    }
+
+    this.speed = 0;
+    this.targetSpeed = 0;
+    house.updateTransition?.(dt);
+    this.syncRidingDog();
+    if (house.transition) return false;
+
+    // House.finishTransition() has placed the robot on the paired arrival
+    // anchor and set roomId. Resume only after that atomic handoff is complete.
+    return this.finishRoomTravel();
+  }
+
+  finishRoomTravel() {
+    const travel = this.roomTravel;
+    if (!travel) return true;
+    this.roomTravel = null;
+    this.targetRoomId = null;
+    this.escape = null;
+    this.bump = null;
+    this.speed = 0;
+    this.targetSpeed = 0;
+    this.trailT = 0;
+    this.lastX = this.x;
+    this.lastY = this.y;
+    this.syncRidingDog();
+
+    if (travel.owner === 'state') {
+      const resume = travel.resume ?? { state: 'clean' };
+      this.cleanMode = resume.cleanMode ?? 'wander';
+      this.modeTimer = resume.modeTimer ?? rand(6, 10);
+      this.seekT = resume.seekT ?? 0;
+      const seekStillHere = resume.seekDirt &&
+        resume.seekDirt.roomId === this.roomId &&
+        this.game.dirt.items.includes(resume.seekDirt) &&
+        !resume.seekDirt.sucking;
+      this.seekDirt = seekStillHere ? resume.seekDirt : null;
+      const fateRoomId = resume.fateTarget?.roomId ?? travel.fromRoomId;
+      this.fateTarget = resume.fateTarget && fateRoomId === this.roomId
+        ? resume.fateTarget
+        : null;
+      this.state = resume.state === 'seek' && !seekStillHere ? 'clean' : resume.state;
+      this.stateT = 0;
+    }
+    return true;
+  }
+
+  abortRoomTravel() {
+    const travel = this.roomTravel;
+    this.game.house?.cancelTransition?.();
+    this.roomTravel = null;
+    this.targetRoomId = null;
+    this.targetSpeed = 0;
+    this.speed = 0;
+    this.lastX = this.x;
+    this.lastY = this.y;
+    this.syncRidingDog();
+    if (travel?.owner === 'state') {
+      this.state = travel.resume?.state ?? 'clean';
+      this.stateT = 0;
+    }
+  }
+
+  prepareDogForTravel() {
+    const dog = this.game.dog;
+    if (!dog || dog.roomId !== this.roomId || dog.state === 'ride') return;
+    // A dog left behind must not continue a chase against a robot in another
+    // room. Other dog activities remain exactly where they began.
+    if (dog.state === 'chase') {
+      dog.state = 'sit';
+      dog.stateT = 0;
+      dog.target = null;
+      dog.chaseT = 0;
+    }
+  }
+
+  syncRidingDog() {
+    const dog = this.game.dog;
+    if (!dog || dog.state !== 'ride') return;
+    dog.roomId = this.roomId;
+    dog.x = this.x;
+    dog.y = this.y - 26;
+  }
+
+  roomHasChoreWork(roomId) {
+    const room = this.game.house?.room?.(roomId);
+    if (!room) return false;
+    const hasFurniture = (name) => room.getFurniture?.(name) ??
+      room.furniture?.find((item) => item.name === name);
+    const items = this.game.dirt.items;
+    const hasSock = hasFurniture('basket') && items.some((d) =>
+      d.roomId === roomId && d.type === 'sock' && d.drop <= 0
+    );
+    const hasToy = hasFurniture('toybox') && items.some((d) =>
+      d.roomId === roomId && (d.type === 'toy_ball' || d.type === 'toy_block') &&
+      !d.toss && !d.fading
+    );
+    return !!(hasSock || hasToy);
+  }
+
+  roomHasRawPoop(roomId) {
+    return this.game.dirt.items.some((item) =>
+      item.roomId === roomId && item.type === 'poop' && item.drop <= 0 && item.age > 4
+    );
+  }
+
+  bindFatePile(target = this.fateTarget) {
+    if (!target) return null;
+    if (target.pile && this.game.dirt.items.includes(target.pile)) return target.pile;
+    const start = { x: this.x, y: this.y };
+    const candidates = this.game.dirt.items.filter((item) =>
+      item.roomId === (target.roomId ?? this.roomId) &&
+      item.type === 'poop' && item.fated
+    );
+    let best = null;
+    let bestDistance = Infinity;
+    for (const pile of candidates) {
+      const distance = pointSegmentDistanceSquared(pile, start, target);
+      if (distance >= bestDistance) continue;
+      best = pile;
+      bestDistance = distance;
+    }
+    if (best) target.pile = best;
+    return best;
+  }
+
+  clearFateTarget({ releasePile = true } = {}) {
+    const pile = this.bindFatePile();
+    if (releasePile && pile && this.game.dirt.items.includes(pile)) pile.fated = false;
+    this.fateTarget = null;
+  }
+
+  otherCleaningWorkRoomId() {
+    const house = this.game.house;
+    if (!house?.rooms || this.roomHasChoreWork(this.roomId) || this.roomHasRawPoop(this.roomId)) {
+      return null;
+    }
+    const now = this.game.time;
+    for (const roomId of house.rooms.keys()) {
+      if (roomId === this.roomId) continue;
+      const hasVacuumWork = this.game.modeHasVac() && this.game.dirt.items.some((d) =>
+        d.roomId === roomId && d.vac && !d.sucking && (!d.shunned || d.shunned <= now)
+      );
+      if (hasVacuumWork || this.roomHasChoreWork(roomId) || this.roomHasRawPoop(roomId)) {
+        return roomId;
+      }
+    }
+    return null;
+  }
+
   goDock(reason) {
+    const alreadyGoing = this.dockReason === reason &&
+      (this.state === 'godock' || this.roomTravel?.resume?.state === 'godock');
     this.dockReason = reason;
+    if (!alreadyGoing) {
+      if (reason === 'battery') {
+        this.setExpr('sleepy', 3);
+        this.game.say('go_charge');
+      } else if (reason === 'bin') {
+        this.setExpr('full', 3);
+        this.game.say('go_empty');
+      } else {
+        this.game.say('go_dock');
+        this.game.sound.ackBeep();
+      }
+    }
+    if (this.roomTravel) {
+      // Finish a doorway crossing before redirecting. Its caller then resumes
+      // in the normal docking state and routes home from whichever side won.
+      if (this.roomTravel.owner === 'state') {
+        this.roomTravel.resume = { ...this.roomTravel.resume, state: 'godock' };
+      }
+      return;
+    }
     this.state = 'godock';
     this.seekDirt = null;
     this.bump = null;
-    if (reason === 'battery') {
-      this.setExpr('sleepy', 3);
-      this.game.say('go_charge');
-    } else if (reason === 'bin') {
-      this.setExpr('full', 3);
-      this.game.say('go_empty');
-    } else {
-      this.game.say('go_dock');
-      this.game.sound.ackBeep();
-    }
   }
 
   summon() {
@@ -235,6 +867,15 @@ export class Robot {
       this.state = 'clean';
       this.cleanMode = 'wander';
       this.modeTimer = rand(6, 10);
+    } else if (this.state === 'travel' && this.dockReason === 'summon' && this.roomTravel) {
+      // A crossing already in progress finishes safely, then resumes cleaning
+      // instead of backing into the dock.
+      this.roomTravel.resume = {
+        ...this.roomTravel.resume,
+        state: 'clean',
+        seekDirt: null,
+        fateTarget: null,
+      };
     }
   }
 
@@ -249,6 +890,7 @@ export class Robot {
   notifyNewDirt(d) {
     if (this.controlled) return;
     if (!this.game.modeHasVac()) return; // mop-only: crumbs aren't its job
+    if ((d.roomId ?? this.roomId) !== this.roomId) return;
     if (this.state === 'clean' || this.state === 'seek') {
       this.seekDirt = d;
       this.seekT = 0;
@@ -329,7 +971,7 @@ export class Robot {
     const active = !['docked', 'charge', 'empty', 'washpads'].includes(this.state);
     if (active && !g.freezeBattery) {
       this.battery = clamp(this.battery - dt / 150, 0, 1);
-      if (this.battery <= 0.16 && !this.controlled && !['godock', 'align'].includes(this.state)) {
+      if (this.battery <= 0.16 && !this.controlled && !['godock', 'align', 'travel'].includes(this.state)) {
         this.goDock('battery');
       }
     }
@@ -347,19 +989,21 @@ export class Robot {
       const ny = this.y + Math.sin(this.heading) * this.speed * dt;
       const dockingStates = ['align', 'docked', 'empty', 'charge', 'leaving'];
       const opts = {
-        ignoreDock: dockingStates.includes(this.state) || this.state === 'godock' || this.actionDockOk,
+        ignoreDock: dockingStates.includes(this.state) || this.state === 'godock' ||
+          this.isRoomTraveling() || this.actionDockOk,
         ignoreCouch: this.allowUnderCouch === true,
       };
-      if (g.room.isFree(nx, ny, R, opts)) {
+      const room = this.roomFor();
+      if (room.isFree(nx, ny, R, opts)) {
         this.x = nx;
         this.y = ny;
-      } else if (!g.room.isFree(this.x, this.y, R, opts)) {
+      } else if (!room.isFree(this.x, this.y, R, opts)) {
         // already embedded in an obstacle (teleport/edge case) — let it
         // drive out instead of being pinned forever
         this.x = nx;
         this.y = ny;
       } else {
-        const hit = g.room.collisionNormal(nx, ny, R, opts);
+        const hit = room.collisionNormal(nx, ny, R, opts);
         this.onBump(hit);
       }
     }
@@ -373,7 +1017,7 @@ export class Robot {
 
     // hum follows motion
     if (g.sound.ready) {
-      if (this.suctionOn || this.state === 'godock' || this.state === 'action') {
+      if (this.suctionOn || ['godock', 'travel', 'action'].includes(this.state)) {
         g.sound.startHum();
         g.sound.setHumIntensity(clamp(Math.abs(this.speed) / 170, 0.15, 1.6));
       } else {
@@ -393,6 +1037,7 @@ export class Robot {
 
     // dirty wheels stamp smears along both wheel tracks while oblivious
     if (this.smearT > 0) {
+      this.smearRoomId ??= this.roomId;
       this.smearT -= dt;
       const sp = Math.abs(this.speed);
       if (sp > 20 && this.z <= 0) {
@@ -402,22 +1047,44 @@ export class Robot {
           const px = Math.cos(this.heading + Math.PI / 2);
           const py = Math.sin(this.heading + Math.PI / 2);
           for (const side of [-1, 1]) {
-            g.smears.stamp(this.x + px * 33 * side, this.y + py * 33 * side, this.heading);
+            g.smears.stamp(
+              this.x + px * 33 * side,
+              this.y + py * 33 * side,
+              this.heading,
+              { roomId: this.roomId },
+            );
           }
-          if (chance(0.2)) g.smears.stamp(this.x + rand(-16, 16), this.y + rand(-16, 16), this.heading);
+          if (chance(0.2)) {
+            g.smears.stamp(
+              this.x + rand(-16, 16),
+              this.y + rand(-16, 16),
+              this.heading,
+              { roomId: this.roomId },
+            );
+          }
         }
       }
-      if (this.smearT <= 0 && g.actions.current?.name !== 'mopMode') {
-        g.pendingMop = true; // the awful realization comes next
+      if (this.smearT <= 0) {
+        if (g.actions.current?.name !== 'mopMode') {
+          g.pendingMop = true; // the awful realization comes next
+          g.pendingMopRoomId = this.smearRoomId ?? this.roomId;
+        }
+        this.smearRoomId = null;
       }
     }
 
     // trail recording
-    if (this.trailMode) {
+    if (this.trailMode && this.roomTravel?.phase !== 'cross') {
       this.trailT -= dt;
       if (this.trailT <= 0) {
         this.trailT = 0.024;
-        this.trail.push({ x: this.x, y: this.y, age: 0, hue: this.rainbowHue });
+        this.trail.push({
+          x: this.x,
+          y: this.y,
+          roomId: this.roomId,
+          age: 0,
+          hue: this.rainbowHue,
+        });
         this.rainbowHue = (this.rainbowHue + 9) % 360;
       }
     }
@@ -428,7 +1095,7 @@ export class Robot {
     }
 
     // stuck detection for nav states (incl. actions driving via driveTo)
-    if (['godock', 'seek', 'action'].includes(this.state)) {
+    if (!this.isRoomTraveling() && ['godock', 'seek', 'action'].includes(this.state)) {
       this.stuckT += dt;
       if (this.stuckT > 1.1) {
         if (dist(this.x, this.y, this.lastX, this.lastY) < 18 && Math.abs(this.targetSpeed) > 20) {
@@ -508,9 +1175,16 @@ export class Robot {
         this.updateClean(dt);
         break;
       }
+      case 'travel': {
+        this.updateRoomTravel(dt);
+        break;
+      }
       case 'seek': {
-        if (!this.seekDirt || this.seekDirt.sucking || !g.dirt.items.includes(this.seekDirt)) {
-          const next = g.dirt.nearestVac(this.x, this.y, true) || (chance(0.5) ? g.dirt.nearestVac(this.x, this.y) : null);
+        if (!this.seekDirt || this.seekDirt.roomId !== this.roomId ||
+            this.seekDirt.sucking || !g.dirt.items.includes(this.seekDirt)) {
+          const player = g.dirt.nearestVac(this.x, this.y, true, this.roomId);
+          const localWork = g.dirt.nearestVac(this.x, this.y, false, this.roomId);
+          const next = player || (chance(0.5) ? localWork : null);
           if (next && dist(this.x, this.y, next.x, next.y) < 900) {
             this.seekDirt = next;
             this.seekT = 0;
@@ -519,15 +1193,27 @@ export class Robot {
             this.state = 'clean';
             this.cleanMode = 'wander';
             this.modeTimer = rand(6, 11);
+            if (!localWork) {
+              const otherRoomId = this.otherCleaningWorkRoomId();
+              if (otherRoomId) this.requestRoom(otherRoomId, 'cleaning');
+            }
             break;
           }
         }
-        // can't get to it (e.g. wedged behind table legs)? shrug and move on —
-        // real robots give up too
+        // Follow a collision-checked route until the suction mouth is on the
+        // target's side of the furniture. Route progress does not consume the
+        // short final-approach timeout.
+        if (this.followSeekPath(this.seekDirt, dt)) {
+          this.seekT = 0;
+          break;
+        }
+        // A moving speck or an unusually tight final approach can still fail;
+        // real robots eventually shrug and try something else.
         this.seekT += dt;
         if (this.seekT > 8) {
           this.seekDirt.shunned = g.time + 30;
           this.seekDirt = null;
+          this.clearSeekPath();
           this.seekT = 0;
           g.sound.questionBeep();
           this.setExpr('dizzy', 1.2);
@@ -537,6 +1223,10 @@ export class Robot {
         break;
       }
       case 'godock': {
+        if (this.roomId !== g.dock.roomId) {
+          this.requestRoom(g.dock.roomId, 'dock');
+          break;
+        }
         const a = g.dock.approach;
         if (this.driveTo(a.x, a.y, 165, 30, { ignoreDock: true })) {
           this.state = 'align';
@@ -630,16 +1320,35 @@ export class Robot {
 
   updateClean(dt) {
     const g = this.game;
+    const dogHere = g.dog?.roomId === this.roomId;
     // being chased overrides fancy patterns — just RUN (in a fun way)
-    if (g.dog?.state === 'chase' && this.cleanMode !== 'wander') {
+    if (dogHere && g.dog.state === 'chase' && this.cleanMode !== 'wander') {
       this.cleanMode = 'wander';
       this.modeTimer = rand(4, 7);
     }
     // "fate" waypoint: looks like ordinary cleaning, happens to pass through
     // whatever the dog left on the floor
     if (this.fateTarget) {
+      if (this.fateTarget.roomId && this.fateTarget.roomId !== this.roomId) {
+        this.clearFateTarget();
+      }
+    }
+    if (this.fateTarget) {
+      const pile = this.bindFatePile();
       if (this.driveTo(this.fateTarget.x, this.fateTarget.y, 145, 30)) {
-        this.fateTarget = null;
+        if (pile && this.game.dirt.items.includes(pile) && !this.fateTarget.finalApproach) {
+          // Local obstacle avoidance can reach the authored point beyond a
+          // pile while skirting the actual mess. Keep ownership of that exact
+          // pile and make its center the final approach. Arriving within 30px
+          // necessarily crosses the game's wider splat radius while moving.
+          this.fateTarget.x = pile.x;
+          this.fateTarget.y = pile.y;
+          this.fateTarget.finalApproach = true;
+          this.bump = null;
+          this.escape = null;
+        } else {
+          this.clearFateTarget();
+        }
       }
       return;
     }
@@ -676,9 +1385,11 @@ export class Robot {
     this.seekCheckT -= dt;
     if (this.seekCheckT <= 0) {
       this.seekCheckT = 1.4;
+      let localWork = null;
       if (g.modeHasVac()) {
-        const player = g.dirt.nearestVac(this.x, this.y, true);
-        const target = player || g.dirt.nearestVac(this.x, this.y);
+        const player = g.dirt.nearestVac(this.x, this.y, true, this.roomId);
+        const target = player || g.dirt.nearestVac(this.x, this.y, false, this.roomId);
+        localWork = target;
         if (target) {
           const d = dist(this.x, this.y, target.x, target.y);
           if (player || (d < 460 && chance(0.55))) {
@@ -687,6 +1398,10 @@ export class Robot {
             return;
           }
         }
+      }
+      if (!localWork) {
+        const otherRoomId = this.otherCleaningWorkRoomId();
+        if (otherRoomId && this.requestRoom(otherRoomId, 'cleaning')) return;
       }
     }
 
@@ -713,7 +1428,7 @@ export class Robot {
     switch (this.cleanMode) {
       case 'wander': {
         const dog = g.dog;
-        if (dog && dog.state === 'chase') {
+        if (dogHere && dog.state === 'chase') {
           // yipes — scoot away from the pup! (bump recovery still applies,
           // so fleeing into a wall stays a comedy, not a clip-through)
           if (dist(this.x, this.y, dog.x, dog.y) < 340) {
@@ -736,7 +1451,7 @@ export class Robot {
       case 'wall': {
         // follow the nearest wall, keeping it on the robot's left
         this.targetSpeed = 140;
-        const b = g.room.bounds;
+        const b = this.roomFor().bounds;
         const margin = 40;
         const dLeft = this.x - b.minX;
         const dRight = b.maxX - this.x;
@@ -780,11 +1495,12 @@ export class Robot {
         }
         // bumping the dog!
         const dog = g.dog;
-        if (dog && dist(this.x, this.y, dog.x, dog.y) < R + 55 && dog.state !== 'ride') {
+        if (dog && dog.roomId === this.roomId &&
+            dist(this.x, this.y, dog.x, dog.y) < R + 55 && dog.state !== 'ride') {
           dog.startle();
         }
       }
-    } else if (['seek', 'godock', 'leaving', 'action'].includes(this.state)) {
+    } else if (['seek', 'godock', 'travel', 'leaving', 'action'].includes(this.state)) {
       // physically blocked mid-navigation: commit to an escape direction
       if (!this.escape || this.game.time >= this.escape.until) this.startEscape();
     }
@@ -866,10 +1582,12 @@ export class Robot {
 
   drawTrail(ctx) {
     if (!this.trail.length) return;
+    const activeRoomId = this.game.house?.activeRoomId ?? this.roomId;
     if (this.trailMode === 'rainbow') {
       for (let i = 1; i < this.trail.length; i++) {
         const p = this.trail[i];
         const q = this.trail[i - 1];
+        if (p.roomId !== activeRoomId || q.roomId !== activeRoomId) continue;
         const a = clamp(1 - p.age / 1.6, 0, 1);
         ctx.strokeStyle = `hsla(${p.hue}, 85%, 62%, ${a * 0.85})`;
         ctx.lineWidth = 34 * a + 6;
@@ -884,6 +1602,7 @@ export class Robot {
       for (let i = 1; i < this.trail.length; i++) {
         const p = this.trail[i];
         const q = this.trail[i - 1];
+        if (p.roomId !== activeRoomId || q.roomId !== activeRoomId) continue;
         const t = clamp(1 - p.age / 3.2, 0, 1);
         // holds wet for a while, then dries out
         const a = t > 0.55 ? 1 : t / 0.55;
@@ -899,6 +1618,7 @@ export class Robot {
       for (let i = 1; i < this.trail.length; i++) {
         const p = this.trail[i];
         const q = this.trail[i - 1];
+        if (p.roomId !== activeRoomId || q.roomId !== activeRoomId) continue;
         const a = clamp(1 - p.age / 0.5, 0, 1);
         ctx.strokeStyle = `rgba(255, 255, 255, ${a * 0.5})`;
         ctx.lineWidth = 20 * a + 2;
@@ -1305,6 +2025,74 @@ export class Robot {
     }
     ctx.restore();
   }
+}
+
+function axisValues(min, max, spacing, extras = []) {
+  const values = [];
+  for (let value = min; value <= max + 0.1; value += spacing) values.push(value);
+  for (const value of extras) {
+    if (Number.isFinite(value) && value >= min && value <= max) values.push(value);
+  }
+  return [...new Set(values.map((value) => Math.round(value * 1000) / 1000))]
+    .sort((a, b) => a - b);
+}
+
+function segmentRectDistanceSquared(from, to, rect) {
+  if (pointInRectangle(from, rect) || pointInRectangle(to, rect)) return 0;
+  const topLeft = { x: rect.x, y: rect.y };
+  const topRight = { x: rect.x + rect.w, y: rect.y };
+  const bottomRight = { x: rect.x + rect.w, y: rect.y + rect.h };
+  const bottomLeft = { x: rect.x, y: rect.y + rect.h };
+  return Math.min(
+    segmentDistanceSquared(from, to, topLeft, topRight),
+    segmentDistanceSquared(from, to, topRight, bottomRight),
+    segmentDistanceSquared(from, to, bottomRight, bottomLeft),
+    segmentDistanceSquared(from, to, bottomLeft, topLeft),
+  );
+}
+
+function pointInRectangle(point, rect) {
+  return point.x >= rect.x && point.x <= rect.x + rect.w &&
+    point.y >= rect.y && point.y <= rect.y + rect.h;
+}
+
+function segmentDistanceSquared(a, b, c, d) {
+  if (segmentsIntersect(a, b, c, d)) return 0;
+  return Math.min(
+    pointSegmentDistanceSquared(a, c, d),
+    pointSegmentDistanceSquared(b, c, d),
+    pointSegmentDistanceSquared(c, a, b),
+    pointSegmentDistanceSquared(d, a, b),
+  );
+}
+
+function pointSegmentDistanceSquared(point, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq <= 1e-12) return (point.x - a.x) ** 2 + (point.y - a.y) ** 2;
+  const t = clamp(((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq, 0, 1);
+  const x = a.x + dx * t;
+  const y = a.y + dy * t;
+  return (point.x - x) ** 2 + (point.y - y) ** 2;
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const cross = (p, q, r) =>
+    (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  const abC = cross(a, b, c);
+  const abD = cross(a, b, d);
+  const cdA = cross(c, d, a);
+  const cdB = cross(c, d, b);
+  const epsilon = 1e-9;
+  const onSegment = (p, q, r) =>
+    q.x >= Math.min(p.x, r.x) - epsilon && q.x <= Math.max(p.x, r.x) + epsilon &&
+    q.y >= Math.min(p.y, r.y) - epsilon && q.y <= Math.max(p.y, r.y) + epsilon;
+  if (Math.abs(abC) <= epsilon && onSegment(a, c, b)) return true;
+  if (Math.abs(abD) <= epsilon && onSegment(a, d, b)) return true;
+  if (Math.abs(cdA) <= epsilon && onSegment(c, a, d)) return true;
+  if (Math.abs(cdB) <= epsilon && onSegment(c, b, d)) return true;
+  return (abC > 0) !== (abD > 0) && (cdA > 0) !== (cdB > 0);
 }
 
 function drawBolt(ctx, cx, cy, s) {

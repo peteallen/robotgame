@@ -14,6 +14,7 @@ export class SoundEngine {
       this.muted = false; // storage blocked (private mode) — default to sound on
     }
     this.humNodes = null;
+    this.wheelGrindNodes = null;
     this.discoNodes = null;
     this._discoTimer = null;
   }
@@ -280,6 +281,68 @@ export class SoundEngine {
     // comedic concentration
     this.tone({ freq: 200, end: 150, dur: 0.5, type: 'sawtooth', vol: 0.05, curve: 'lin' });
     this.tone({ freq: 300, end: 340, dur: 0.5, type: 'triangle', vol: 0.05, delay: 0.55, curve: 'lin' });
+  }
+
+  startWheelGrind() {
+    if (!this.ctx || this.wheelGrindNodes) return;
+    const t0 = this.ctx.currentTime;
+
+    const noiseLen = Math.max(1, Math.floor(this.ctx.sampleRate * 0.22));
+    const buf = this.ctx.createBuffer(1, noiseLen, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < noiseLen; i++) data[i] = Math.random() * 2 - 1;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+
+    const filt = this.ctx.createBiquadFilter();
+    filt.type = 'bandpass';
+    filt.frequency.value = 420;
+    filt.Q.value = 1.4;
+
+    const motor = this.ctx.createOscillator();
+    motor.type = 'sawtooth';
+    motor.frequency.value = 76;
+    const motorGain = this.ctx.createGain();
+    motorGain.gain.value = 0.2;
+
+    // A quick square modulation supplies the wheel teeth catching on fabric.
+    const chatter = this.ctx.createOscillator();
+    chatter.type = 'square';
+    chatter.frequency.value = 9;
+    const chatterGain = this.ctx.createGain();
+    chatterGain.gain.value = 0.025;
+
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(0.105, t0 + 0.06);
+    src.connect(filt);
+    motor.connect(motorGain);
+    motorGain.connect(filt);
+    filt.connect(g);
+    chatter.connect(chatterGain);
+    chatterGain.connect(g.gain);
+    g.connect(this.master);
+    src.start(t0);
+    motor.start(t0);
+    chatter.start(t0);
+    this.wheelGrindNodes = { src, motor, chatter, chatterGain, g };
+  }
+
+  stopWheelGrind() {
+    if (!this.wheelGrindNodes || !this.ctx) return;
+    const { src, motor, chatter, chatterGain, g } = this.wheelGrindNodes;
+    this.wheelGrindNodes = null;
+    const t = this.ctx.currentTime;
+    chatterGain.gain.cancelScheduledValues(t);
+    chatterGain.gain.setValueAtTime(chatterGain.gain.value, t);
+    chatterGain.gain.linearRampToValueAtTime(0, t + 0.04);
+    g.gain.cancelScheduledValues(t);
+    g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+    src.stop(t + 0.05);
+    motor.stop(t + 0.05);
+    chatter.stop(t + 0.05);
   }
 
   plop() {

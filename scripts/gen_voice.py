@@ -35,7 +35,7 @@ LINES = {
     "thank_you": "Thank you!",
     "help_stuck": "Help! I'm stuck! Please move me somewhere new.",
     "thank_resume": "Thank you! Resuming cleaning.",
-    "all_clean": "The room is all clean!",
+    "all_clean": "The whole house is clean!",
 }
 
 # openai/gpt-audio is the audio-output model that actually exists on OpenRouter

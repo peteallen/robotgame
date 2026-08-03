@@ -3,6 +3,11 @@
 // ride. Big movement, big spectacle, no chores.
 import { TAU, rand, pick, chance, clamp, lerp, dist, angleTo } from '../core/math.js';
 
+function roomFurniture(g, name) {
+  return g.room?.getFurniture?.(name) ??
+    g.room?.furniture?.find((item) => item.name === name) ?? null;
+}
+
 // ---------------------------------------------------------------- turbo zoom
 export const TurboZoom = {
   name: 'turboZoom',
@@ -370,18 +375,29 @@ export const UnderCouch = {
   name: 'underCouch',
   weight: 7,
   maxDur: 16,
+  canRun: (g) => !!roomFurniture(g, 'couch') && !g.robot.isRoomTraveling?.(),
   start(g) {
+    const couch = roomFurniture(g, 'couch');
+    if (!couch) {
+      this.finished = true;
+      return;
+    }
     this.state.phase = 'approach';
     this.state.t = 0;
     this.state.rattleT = 0;
+    this.state.couch = couch;
+    this.state.roomId = g.robot.roomId ?? g.room?.id ?? 'living';
     g.robot.setExpr('determined', 4);
     g.sound.ackBeep();
   },
   update(g, dt) {
-    const g_ = g;
     const r = g.robot;
     const st = this.state;
-    const couch = g.room.couch;
+    const couch = st.couch;
+    if (!couch || r.roomId !== st.roomId) {
+      this.finished = true;
+      return;
+    }
     st.t += dt;
     switch (st.phase) {
       case 'approach': {
@@ -408,7 +424,7 @@ export const UnderCouch = {
           g.shakeCouch = 0.3;
           // dust squirts out the sides
           const side = pick([-1, 1]);
-          g.particles.dustPuff(couch.cx + side * 260, 900, 5);
+          g.particles.dustPuff(couch.cx + side * 260, 900, 5, undefined, st.roomId);
         }
         // wander around under there (but stay hidden under the couch)
         r.heading += rand(-3, 3) * dt;
@@ -430,13 +446,16 @@ export const UnderCouch = {
           // treasure! dust bunnies scatter out & robot wears one as a hat
           g.hatTime = 7;
           g.sound.tada();
-          g.particles.dustPuff(r.x, r.y, 14);
+          g.particles.dustPuff(r.x, r.y, 14, undefined, st.roomId);
           for (let i = 0; i < 2; i++) {
             const a = rand(-Math.PI * 0.8, -Math.PI * 0.2);
-            g.dirt.spawn('dustbunny', r.x + Math.cos(a) * rand(80, 150), Math.max(g.room.bounds.minY, r.y + Math.sin(a) * rand(60, 120)), { drop: 30 });
+            g.dirt.spawn('dustbunny', r.x + Math.cos(a) * rand(80, 150), Math.max(g.room.bounds.minY, r.y + Math.sin(a) * rand(60, 120)), {
+              drop: 30,
+              roomId: st.roomId,
+            });
           }
           if (chance(0.6)) {
-            const ball = g.dirt.spawn('toy_ball', couch.cx - 100, 720, {});
+            const ball = g.dirt.spawn('toy_ball', couch.cx - 100, 720, { roomId: st.roomId });
             ball.vx = rand(-160, -60);
             ball.vy = rand(-40, 40);
             g.sound.boing();
@@ -536,17 +555,31 @@ export const DogRide = {
   name: 'dogRide',
   weight: 8,
   maxDur: 11,
-  canRun: (g) => g.dog.state !== 'ride' && g.dog.state !== 'startle' && !g.dog.pooping(),
+  canRun: (g) => {
+    const robotRoomId = g.robot.roomId ?? g.room?.id ?? 'living';
+    return !g.robot.isRoomTraveling?.() && g.dog.roomId === robotRoomId &&
+      g.dog.state !== 'ride' && g.dog.state !== 'startle' && !g.dog.pooping();
+  },
   start(g) {
+    const robotRoomId = g.robot.roomId ?? g.room?.id ?? 'living';
+    if (g.dog.roomId !== robotRoomId || g.robot.isRoomTraveling?.()) {
+      this.finished = true;
+      return;
+    }
     g.dog.hurry = true;
     g.dog.beginWalk({ x: g.robot.x, y: g.robot.y });
     g.dog.bark();
     g.robot.setExpr('happy', 4);
     this.state.mounted = false;
+    this.state.roomId = robotRoomId;
   },
   update(g, dt) {
     const r = g.robot;
     const dog = g.dog;
+    if (!this.state.mounted && (r.roomId !== this.state.roomId || dog.roomId !== this.state.roomId)) {
+      this.finished = true;
+      return;
+    }
     if (!this.state.mounted) {
       // they roll/run to meet each other!
       r.driveTo(dog.x, dog.y, 110, 85);
@@ -555,7 +588,7 @@ export const DogRide = {
       if (dist(dog.x, dog.y, r.x, r.y) < 95) {
         dog.tryRide();
         this.state.mounted = true;
-        g.particles.hearts(r.x, r.y - 60, 4);
+        g.particles.hearts(r.x, r.y - 60, 4, this.state.roomId);
         g.dog.bark();
       }
       if (this.elapsed > 9 && !this.state.mounted) this.finished = true;

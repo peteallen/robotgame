@@ -22,6 +22,12 @@ export class ActionRegistry {
     if (this.current) {
       this.current.elapsed += dt;
       this.current.update?.(this.game, dt);
+      // Crossing a doorway is travel time, not part of the surprise itself.
+      // In particular, a dock or mop action must not hit its safety timeout
+      // simply because the robot started in the other room.
+      if (this.game.robot.roomTravel?.owner === 'controlled') {
+        this.current.elapsed = Math.max(0, this.current.elapsed - dt);
+      }
       const timeUp = this.current.elapsed > (this.current.maxDur ?? 20);
       if (this.current.finished || timeUp) {
         this.current.end?.(this.game);
@@ -44,6 +50,7 @@ export class ActionRegistry {
   force(name) {
     const a = this.actions.find((x) => x.name === name);
     if (!a) return false;
+    if (a.canForce && !a.canForce(this.game)) return false;
     if (this.current) {
       this.current.end?.(this.game);
       this.current = null;

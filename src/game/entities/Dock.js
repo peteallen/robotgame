@@ -18,6 +18,10 @@ const REGIONS = {
 export class Dock {
   constructor(game) {
     this.game = game;
+    // The one maintenance dock lives in the original living room. Keeping
+    // that ownership explicit prevents a phantom dock (and collision) from
+    // appearing in rooms that reuse the same local coordinates.
+    this.roomId = 'living';
     this.x = 1330;
     this.parkY = 300; // robot center when docked — middle of the big pad
     this.drawW = 288; // matches sprite aspect (448x560)

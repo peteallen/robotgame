@@ -1,5 +1,5 @@
 // Game: owns the world, update/draw pipeline, y-sorted rendering and input.
-import { TAU, clamp, lerp, rand, pick, chance, dist, damp, angleTo } from './core/math.js';
+import { TAU, clamp, rand, pick, chance, dist, damp, angleTo } from './core/math.js';
 import { SoundEngine } from './core/SoundEngine.js';
 import { Voice } from './core/Voice.js';
 import { Sfx } from './core/Sfx.js';
@@ -7,15 +7,36 @@ import { Particles } from './fx/Particles.js';
 import { Smears } from './fx/Smears.js';
 import { Cutaway } from './fx/Cutaway.js';
 import { Splash } from './fx/Splash.js';
-import { Room, WORLD_W, WORLD_H, roundRect } from './world/Room.js';
+import { WORLD_W, WORLD_H, roundRect } from './world/Room.js';
+import { House } from './world/House.js';
 import { Dock } from './entities/Dock.js';
 import { Robot } from './entities/Robot.js';
 import { DirtSystem } from './entities/DirtSystem.js';
 import { Dog } from './entities/Dog.js';
 import { Ambience } from './entities/Ambience.js';
+import { MilkBottle } from './entities/MilkBottle.js';
 import { Hud } from './ui/Hud.js';
 import { ActionRegistry } from './actions/ActionRegistry.js';
 import { registerDefaultActions } from './actions/index.js';
+import { createMatJamTriggerState, updateMatJamTrigger } from './actions/matJam.js';
+
+export function cleanVictoryReady(game, robot = game.robot) {
+  // The final particle can fill the bin, or finish its suction animation on
+  // the same update that the battery asks to go home. Those two automatic
+  // dock trips must yield to the party, including while they are only just
+  // starting a doorway trip. The final-clean room marker keeps manual travel,
+  // summon docking and older service trips non-interruptible.
+  const finalPickupDockTrip = game.finalVacuumRoomId === robot.roomId &&
+    (robot.dockReason === 'bin' || robot.dockReason === 'battery') &&
+    (robot.state === 'godock' ||
+      (robot.state === 'travel' && robot.roomTravel?.owner === 'state' &&
+        robot.roomTravel.reason === 'dock'));
+  const readyState = robot.state === 'clean' || robot.state === 'seek' || finalPickupDockTrip;
+
+  return game.roomDirty && !game.actions.busy && readyState && !robot.stayDocked &&
+    robot.smearT <= 0 && game.smears.count === 0 && !game.pendingMop &&
+    !game.dog.pooping() && game.dirt.items.length === 0;
+}
 
 export class Game {
   constructor(canvas, assets) {
@@ -25,18 +46,25 @@ export class Game {
     this.sound = new SoundEngine();
     this.voice = new Voice(this.sound);
     this.sfx = new Sfx(this.sound);
-    this.particles = new Particles();
-    this.smears = new Smears(this);
-    this.room = new Room(this);
+    // House creates both full-size scenes and keeps `game.room` pointed at the
+    // scene the robot currently occupies. The dock and robot can therefore
+    // safely read room ownership during their own construction.
+    this.house = new House(this);
     this.dock = new Dock(this);
     this.robot = new Robot(this);
+    this.particles = new Particles(this);
+    this.smears = new Smears(this);
+    this.milkBottle = new MilkBottle(this);
     this.dirt = new DirtSystem(this);
     this.dog = new Dog(this);
     this.ambience = new Ambience(this);
     this.cutaway = new Cutaway(this);
     this.splash = new Splash(this);
     this.pendingMop = false;
-    this.roomDirty = false; // set by DirtSystem.spawn; cleared by the win party
+    this.pendingMopRoomId = null;
+    // Historical name, now house-wide: any room's DirtSystem.spawn re-arms it.
+    this.roomDirty = false;
+    this.finalVacuumRoomId = null;
 
     // cleaning mode the PLAYER chose: 'vac' | 'mop' | 'both'
     this.userMode = this.loadMode();
@@ -44,6 +72,7 @@ export class Game {
     this.hud = new Hud(this);
     this.actions = new ActionRegistry(this);
     registerDefaultActions(this.actions);
+    this.matJamTriggerState = createMatJamTriggerState();
 
     this.time = 0;
     this.dt = 0.016;
@@ -59,6 +88,9 @@ export class Game {
     this.scale = 1;
     this.offX = 0;
     this.offY = 0;
+    // Room collision and initial floor seeding both consult the responsive
+    // minimap position, so establish the real viewport transform first.
+    this.resize();
 
     // input state
     this.pointerDown = false;
@@ -67,6 +99,9 @@ export class Game {
     this.lastCrumb = null;
     this.dragSpawned = 0;
     this.robotDrag = null; // rescuing a trapped robot by hand
+    this.pointerCapture = null; // HUD/doorway presses never become floor drags
+    this._interactionRoomId = this.house.activeRoomId;
+    this._roomTravelInputLocked = false;
 
     // socks live in the laundry basket between deliveries — shared across
     // every browser via the dev server's stash (localStorage as fallback)
@@ -78,10 +113,12 @@ export class Game {
       if (!document.hidden) this.syncSocks(false);
     }, 8000);
 
-    // seed a few dirt piles so there's something to do immediately
-    for (let i = 0; i < 6; i++) this.dirt.spawnRandom();
+    // Both rooms begin with a small, equal cleaning job. Explicit ownership is
+    // important because the two scenes deliberately reuse the same coordinates.
+    for (const roomId of this.house.roomIds) {
+      for (let i = 0; i < 3; i++) this.dirt.spawnRandom(roomId);
+    }
 
-    this.resize();
     this._raf = null;
     this._last = performance.now();
     const loop = (now) => {
@@ -105,6 +142,46 @@ export class Game {
     this.scale = scale;
     this.offX = (w - WORLD_W * scale) / 2;
     this.offY = (h - WORLD_H * scale) / 2;
+    this.reconcileMinimapOverlap();
+  }
+
+  reconcileMinimapOverlap() {
+    if (!this.house) return;
+    const relocate = (point, roomId, radius) => {
+      const room = this.house.room(roomId);
+      if (!room?.isHudFree || room.isHudFree(point.x, point.y, radius)) return false;
+      const safe = room.nearestFreePoint(point.x, point.y, radius);
+      point.x = safe.x;
+      point.y = safe.y;
+      return true;
+    };
+
+    const robot = this.robot;
+    if (robot && !this.house.transition && !robot.isRoomTraveling?.()) {
+      relocate(robot, robot.roomId, robot.radius ?? 62);
+    }
+
+    for (const item of this.dirt?.items ?? []) {
+      if (relocate(item, item.roomId, 24) && item.sucking) {
+        item.sucking = false;
+        item.suckT = 0;
+      }
+      if (item.toss) {
+        const target = { x: item.toss.toX, y: item.toss.toY };
+        if (relocate(target, item.roomId, 24)) {
+          item.toss.toX = target.x;
+          item.toss.toY = target.y;
+        }
+      }
+    }
+
+    for (const smear of this.smears?.items ?? []) {
+      const radius = smear.puddle ? Math.max(smear.len ?? 0, smear.w ?? 0) / 2 + 4 : 18;
+      relocate(smear, smear.roomId, radius);
+    }
+    this.smears?.reconcileLayout?.();
+    this.milkBottle?.syncLayout?.();
+    this.dog?.reconcileHudAvoidance?.();
   }
 
   screenToWorld(cx, cy) {
@@ -120,6 +197,54 @@ export class Game {
 
   say(name, opts) {
     this.voice.say(name, opts);
+  }
+
+  requestRoom(roomId, source = 'manual') {
+    if (!this.house.hasRoom(roomId)) return false;
+    const startingTravel = roomId !== this.robot.roomId && !this.robot.isRoomTraveling?.();
+    const accepted = this.robot.requestRoom?.(roomId, source) ?? false;
+    if (!accepted) return false;
+
+    if (startingTravel) {
+      // A room request owns navigation from this point on. End any gesture in
+      // the old room immediately instead of waiting for the visual midpoint.
+      this.cancelPointerInteraction();
+      this._roomTravelInputLocked = true;
+      if (source === 'map' || source === 'doorway') this.sound.ackBeep();
+    }
+    return true;
+  }
+
+  // One cancellation path is used by room requests, automatic/action travel,
+  // and the eventual scene switch. A sock already pulled from the basket goes
+  // safely back into the shared stash; a lifted rescue robot is set down in
+  // its original room before the pointer state is forgotten.
+  cancelPointerInteraction({ returnSock = true } = {}) {
+    if (returnSock && this.dragSock) this.addBasketSock(this.dragSock.tint);
+    this.dragSock = null;
+
+    const trapped = this.actions?.current;
+    if (this.robotDrag?.moved && trapped?.name === 'trapped' &&
+        trapped.state?.phase === 'held' && trapped.state.roomId === this.room?.id) {
+      trapped.place(this, this.robot.x, this.robot.y);
+    }
+    this.robotDrag = null;
+    this.pointerDown = false;
+    this.pointerCapture = null;
+    this.pendingSockDrag = false;
+    this.downPos = null;
+    this.lastCrumb = null;
+    this.dragSpawned = 0;
+  }
+
+  syncRoomInteractionState() {
+    const roomId = this.house.activeRoomId;
+    const traveling = !!this.house.transition || !!this.robot.isRoomTraveling?.();
+    if (roomId !== this._interactionRoomId || (traveling && !this._roomTravelInputLocked)) {
+      this.cancelPointerInteraction();
+    }
+    this._interactionRoomId = roomId;
+    this._roomTravelInputLocked = traveling;
   }
 
   // ---- cleaning modes -------------------------------------------------------
@@ -159,7 +284,7 @@ export class Game {
   onDockServiced() {
     this.mopComplained = false;
     this.sound.happyBeeps(3);
-    this.particles.sparkle(this.dock.x, this.dock.spriteTop + 40, 8);
+    this.particles.sparkle(this.dock.x, this.dock.spriteTop + 40, 8, this.dock.roomId);
   }
 
   // is a potty disaster anywhere in progress? (pads merely being installed
@@ -171,6 +296,10 @@ export class Game {
       this.actions.current?.name === 'mopMode' ||
       this.dog.pooping() ||
       this.dirt.items.some((d) => d.type === 'poop');
+  }
+
+  updateMatJam(dt) {
+    return updateMatJamTrigger(this, this.matJamTriggerState, dt);
   }
 
   // ---- the sock stash -------------------------------------------------------
@@ -228,36 +357,69 @@ export class Game {
     return tint;
   }
 
+  roomFurniture(name, room = this.room) {
+    return room?.getFurniture?.(name) ??
+      room?.furniture?.find((item) => item.name === name) ?? null;
+  }
+
+  basketEffectPoint(room = this.room) {
+    const basket = this.roomFurniture('basket', room);
+    if (!basket) return null;
+    return {
+      x: basket.cx,
+      y: basket.cy - basket.h * 0.22,
+    };
+  }
+
   basketHit(x, y) {
-    const b = this.room.furniture.find((f) => f.name === 'basket');
+    const b = this.roomFurniture('basket');
+    if (!b) return false;
     return x > b.cx - b.w / 2 - 12 && x < b.cx + b.w / 2 + 12 &&
       y > b.cy - b.h / 2 - 30 && y < b.cy + b.h / 2 + 16;
   }
 
   // a sock hops out of the basket onto the floor
   popSockOut() {
+    const basket = this.roomFurniture('basket');
+    if (!basket) {
+      this.sound.squeak();
+      return;
+    }
     const tint = this.takeBasketSock();
     if (!tint) {
       this.sound.squeak();
       return;
     }
+    const room = this.room;
+    const roomId = room.id;
+    const center = (room.bounds.minX + room.bounds.maxX) / 2;
+    const inward = basket.cx > center ? -1 : 1;
     let spot = null;
     for (let i = 0; i < 24; i++) {
-      const x = 1250 + rand(-120, 160);
-      const y = 420 + rand(-20, 140);
-      if (this.room.isFree(x, y, 45)) {
+      const x = basket.cx + inward * rand(basket.w * 0.7, basket.w * 1.75);
+      const y = basket.cy + basket.h * 0.62 + rand(-10, basket.h * 0.75);
+      if (room.isFree(x, y, 45)) {
         spot = { x, y };
         break;
       }
     }
-    if (!spot) spot = this.room.randomFloorPoint(50);
-    this.dirt.spawn('sock', spot.x, spot.y, { tint, drop: rand(110, 160) });
+    if (!spot) spot = room.randomFloorPoint(50);
+    this.dirt.spawn('sock', spot.x, spot.y, { tint, drop: rand(110, 160), roomId });
     this.sound.boing();
-    this.particles.sparkle(1545, 250, 4);
+    const effect = this.basketEffectPoint(room);
+    if (effect) this.particles.sparkle(effect.x, effect.y, 4, roomId);
   }
 
   onPickup(d) {
     this.stats.pickups++;
+    // DirtSystem removes the swallowed particle before calling this hook. If
+    // that made the entire house clean apart from a possibly-running action,
+    // remember where it happened. This also lets a vacuuming stunt finish
+    // before its eventual bin/battery dock request yields to the party.
+    if (this.dirt.items.length === 0 && this.robot.smearT <= 0 &&
+        this.smears.count === 0 && !this.pendingMop && !this.dog.pooping()) {
+      this.finalVacuumRoomId = d.roomId ?? this.robot.roomId;
+    }
   }
 
   celebrate() {
@@ -267,6 +429,10 @@ export class Game {
 
   // ---- input --------------------------------------------------------------
 
+  onPointerCancel() {
+    this.cancelPointerInteraction();
+  }
+
   onPointerDown(cx, cy) {
     if (this.splash.active) {
       this.splash.dismiss();
@@ -275,7 +441,32 @@ export class Game {
     this.sound.unlock();
     this.lastInteraction = this.time;
     const p = this.screenToWorld(cx, cy);
+
+    // Capture overlays and doorway runways on press, not release. That keeps a
+    // finger which starts on the minimap or doorway from ever becoming a trail
+    // of crumbs when it moves a little before lifting.
+    if (this.hud.hitTest(p.x, p.y)) {
+      this.pointerDown = true;
+      this.pointerCapture = { kind: 'hud' };
+      this.downPos = p;
+      this.downTime = this.time;
+      this.lastCrumb = null;
+      this.pendingSockDrag = false;
+      return;
+    }
+    if (this.robot.isRoomTraveling?.() || this.house.transition) {
+      this.pointerDown = true;
+      this.pointerCapture = { kind: 'blocked' };
+      this.downPos = p;
+      this.downTime = this.time;
+      this.lastCrumb = null;
+      this.pendingSockDrag = false;
+      return;
+    }
     // a trapped robot can be grabbed: press it, drag it somewhere safe
+    // Its visible body is a more specific target than a doorway's deliberately
+    // generous runway, so rescue wins when the two hit areas overlap. The HUD
+    // remains first so the minimap and other controls keep their normal input.
     const act = this.actions.current;
     if (act?.name === 'trapped' && act.grabbable() &&
         dist(p.x, p.y, this.robot.x, this.robot.y - this.robot.z) < this.robot.radius + 46) {
@@ -283,10 +474,31 @@ export class Game {
       this.pointerDown = true;
       this.downPos = p;
       this.lastCrumb = null;
+      this.pointerCapture = null;
+      this.pendingSockDrag = false;
+      return;
+    }
+    const doorway = this.room.tapDoorway?.(p.x, p.y);
+    if (doorway) {
+      this.pointerDown = true;
+      this.pointerCapture = { kind: 'doorway', targetRoomId: doorway.targetRoomId };
+      this.downPos = p;
+      this.downTime = this.time;
+      this.lastCrumb = null;
+      this.pendingSockDrag = false;
+      return;
+    }
+    if (this.milkBottle?.contains?.(p.x, p.y, this.house.activeRoomId)) {
+      this.pointerDown = true;
+      this.pointerCapture = { kind: 'milkBottle' };
+      this.downPos = p;
+      this.downTime = this.time;
+      this.lastCrumb = null;
       this.pendingSockDrag = false;
       return;
     }
     this.pointerDown = true;
+    this.pointerCapture = null;
     this.downPos = p;
     this.downTime = this.time;
     this.lastCrumb = p;
@@ -297,6 +509,7 @@ export class Game {
 
   onPointerMove(cx, cy) {
     if (this.splash.active) return;
+    if (this.pointerCapture) return;
     // the trapped robot rides the finger to safety
     if (this.robotDrag && this.pointerDown) {
       const act = this.actions.current;
@@ -329,9 +542,9 @@ export class Game {
     if (this.pendingSockDrag && this.downPos && dist(p.x, p.y, this.downPos.x, this.downPos.y) > 28) {
       const tint = this.takeBasketSock();
       if (tint) {
-        this.dragSock = { tint, x: p.x, y: p.y };
+        this.dragSock = { tint, x: p.x, y: p.y, roomId: this.room.id };
         this.sound.pop();
-        this.particles.sparkle(p.x, p.y, 3);
+        this.particles.sparkle(p.x, p.y, 3, this.room.id);
       }
       this.pendingSockDrag = false;
       return;
@@ -341,7 +554,7 @@ export class Game {
     if (dist(p.x, p.y, this.lastCrumb.x, this.lastCrumb.y) > 80 && this.dragSpawned < 14) {
       const b = this.room.bounds;
       if (p.x > b.minX - 20 && p.x < b.maxX + 20 && p.y > b.minY - 10 && p.y < b.maxY + 30 && this.room.isFree(p.x, p.y, 20)) {
-        this.dirt.playerCrumb(p.x, p.y);
+        this.dirt.playerCrumb(p.x, p.y, this.room.id);
         this.sound.pop();
         this.lastCrumb = p;
         this.dragSpawned++;
@@ -358,6 +571,23 @@ export class Game {
     if (!this.pointerDown) return;
     this.pointerDown = false;
     const p = this.screenToWorld(cx, cy);
+
+    if (this.pointerCapture) {
+      const capture = this.pointerCapture;
+      const dragLimit = capture.kind === 'milkBottle' ? 48 : 30;
+      const wasDrag = this.downPos && dist(p.x, p.y, this.downPos.x, this.downPos.y) > dragLimit;
+      const held = this.time - this.downTime;
+      const holdLimit = capture.kind === 'milkBottle' ? 0.85 : 0.6;
+      this.pointerCapture = null;
+      this.downPos = null;
+      this.lastCrumb = null;
+      if (!wasDrag && held < holdLimit) {
+        if (capture.kind === 'hud') this.hud.onTap(p.x, p.y);
+        else if (capture.kind === 'doorway') this.requestRoom(capture.targetRoomId, 'doorway');
+        else if (capture.kind === 'milkBottle') this.milkBottle.poke();
+      }
+      return;
+    }
     // set the rescued robot down — or, if it was just a tap, poke it
     if (this.robotDrag) {
       const drag = this.robotDrag;
@@ -391,7 +621,8 @@ export class Game {
     if (this.basketHit(x, y)) {
       this.addBasketSock(sock.tint);
       this.sound.pop();
-      this.particles.sparkle(1545, 250, 4);
+      const effect = this.basketEffectPoint();
+      if (effect) this.particles.sparkle(effect.x, effect.y, 4, this.room.id);
       return;
     }
     // find a landing spot on the floor near the finger
@@ -420,29 +651,139 @@ export class Game {
       this.sound.whoosh();
       return;
     }
-    this.dirt.spawn('sock', spot.x, spot.y, { tint: sock.tint, drop: 26 });
+    this.dirt.spawn('sock', spot.x, spot.y, { tint: sock.tint, drop: 26, roomId: this.room.id });
     this.sound.pop();
-    this.particles.dustPuff(spot.x, spot.y, 3, 'rgba(255, 230, 180, 0.5)');
+    this.particles.dustPuff(spot.x, spot.y, 3, 'rgba(255, 230, 180, 0.5)', this.room.id);
+  }
+
+  floorPointNear(furniture, minRadius, maxRadius, objectRadius = 36) {
+    const room = this.room;
+    const b = room.bounds;
+    for (let i = 0; i < 36; i++) {
+      const a = rand(0, TAU);
+      const radius = rand(minRadius, maxRadius);
+      const x = furniture.cx + Math.cos(a) * radius;
+      const y = furniture.cy + Math.sin(a) * radius;
+      if (x < b.minX || x > b.maxX || y < b.minY || y > b.maxY) continue;
+      if (room.isFree(x, y, objectRadius, { solidTable: true })) return { x, y };
+    }
+    return room.randomFloorPoint(objectRadius);
+  }
+
+  tapKitchenFurniture(hit) {
+    if (this.room.id !== 'kitchen' || !hit) return false;
+    const room = this.room;
+    const furniture = this.roomFurniture(hit, room);
+    if (!furniture) return false;
+    const roomId = room.id;
+    room.activateFurniture?.(hit);
+
+    if (hit === 'island') {
+      // The cereal bowl is painted on the left side of the island. Pieces arc
+      // out from that authored location and land only on reachable floor.
+      const source = {
+        x: furniture.cx - furniture.w * 0.15,
+        y: furniture.cy - furniture.h * 0.31,
+      };
+      for (let i = 0; i < 5; i++) {
+        const target = this.floorPointNear(
+          furniture,
+          furniture.w * 0.48,
+          furniture.w * 0.92,
+          (this.robot.radius ?? 62) + 8,
+        );
+        const cereal = this.dirt.spawn('cereal', source.x + rand(-22, 22), source.y + rand(-8, 8), {
+          playerMade: true,
+          roomId,
+          scale: rand(0.7, 1),
+        });
+        this.dirt.toss(cereal, target.x, target.y);
+      }
+      this.sound.whoosh();
+      this.sound.boing();
+      this.particles.sparkle(source.x, source.y, 7, roomId);
+    } else if (hit === 'trash') {
+      // A bin tap makes a visible, player-caused spill. Most taps shake loose
+      // crumbs; occasionally one shy dust bunny tumbles out instead.
+      const kind = chance(0.3) ? 'dustbunny' : 'crumbs';
+      const count = kind === 'dustbunny' ? 1 : 3;
+      const source = {
+        x: furniture.cx - furniture.w * 0.22,
+        y: furniture.cy - furniture.h * 0.22,
+      };
+      for (let i = 0; i < count; i++) {
+        const target = this.floorPointNear(
+          furniture,
+          furniture.w * 0.75,
+          furniture.w * 1.75,
+          (this.robot.radius ?? 62) + 8,
+        );
+        const item = this.dirt.spawn(kind, source.x + rand(-12, 12), source.y, {
+          playerMade: true,
+          roomId,
+          scale: rand(0.75, 1.05),
+        });
+        this.dirt.toss(item, target.x, target.y);
+      }
+      this.sound.pop();
+      this.sound.whoosh();
+      this.particles.dustPuff(source.x, source.y, 6, 'rgba(170, 150, 125, 0.5)', roomId);
+    } else if (hit === 'fridge') {
+      // The milk now comes from the visible bottle on the island. The fridge
+      // keeps its friendly wobble/light response without creating a surprise
+      // floor mess from an object the player cannot see.
+      this.sound.pop();
+      this.particles.sparkle(furniture.cx - furniture.w * 0.28, furniture.cy, 4, roomId);
+    } else if (hit === 'sink') {
+      this.sound.glug();
+      for (let i = 0; i < 9; i++) {
+        this.particles.add({
+          x: furniture.cx + rand(-95, 95),
+          y: furniture.cy + rand(-28, 18),
+          roomId,
+          kind: 'bubble',
+          size: rand(5, 12),
+          life: rand(0.7, 1.4),
+          vx: rand(-22, 22),
+          vy: rand(-95, -42),
+        });
+      }
+    } else {
+      // Cabinet doors give a soft bounce without adding unexplained debris.
+      this.sound.pop();
+      this.particles.sparkle(furniture.cx, furniture.cy - furniture.h * 0.25, 4, roomId);
+    }
+
+    const nearest = this.dirt.nearestVac(this.robot.x, this.robot.y, true, roomId);
+    if (nearest) this.robot.notifyNewDirt(nearest);
+    return true;
   }
 
   tap(x, y) {
     const r = this.robot;
     // 1. HUD buttons
     if (this.hud.onTap(x, y)) return;
-    // 2. running action consumes taps (bubble popping!)
+    if (this.house.transition || r.isRoomTraveling?.()) return;
+    // 2. paired doorway — this sits ahead of every room object and floor tap
+    const doorway = this.room.tapDoorway?.(x, y);
+    if (doorway) {
+      this.requestRoom(doorway.targetRoomId, 'doorway');
+      return;
+    }
+    // 3. running action consumes taps (bubble popping!)
     if (this.actions.onTap(x, y)) return;
-    // 3. the robot!
-    if (dist(x, y, r.x, r.y - r.z) < r.radius + 34) {
+    // 4. the robot!
+    if (r.roomId === this.house.activeRoomId && dist(x, y, r.x, r.y - r.z) < r.radius + 34) {
       this.tapRobot();
       return;
     }
-    // 4. the dog
-    if (this.dog.contains(x, y)) {
+    // 5. the dog
+    if (this.dog.roomId === this.house.activeRoomId && this.dog.contains(x, y)) {
       this.dog.onTap();
       return;
     }
-    // 5. the dock — service a tank, or summon the robot home
-    if (this.dock.contains(x, y)) {
+    // 6. the dock — service a tank, or summon the robot home
+    if (this.dock.roomId === this.house.activeRoomId && this.dock.contains(x, y)) {
       const zone = this.dock.tapZone(x, y);
       if (zone) {
         if (this.dock.service(zone)) {
@@ -451,7 +792,7 @@ export class Game {
         } else {
           // nothing to service here — friendly blip
           this.sound.pop();
-          this.particles.sparkle(x, y, 3);
+          this.particles.sparkle(x, y, 3, this.dock.roomId);
         }
         return;
       }
@@ -460,17 +801,22 @@ export class Game {
       this.robot.summon();
       return;
     }
-    // 6. toys bounce when tapped
+    // 7. toys bounce when tapped
     const toy = this.dirt.tapToy(x, y);
     if (toy) {
       toy.vx = rand(-220, 220);
       toy.vy = rand(-220, 220);
       this.sound.squeak();
-      this.particles.sparkle(toy.x, toy.y - 20, 4);
+      this.particles.sparkle(toy.x, toy.y - 20, 4, toy.roomId);
       return;
     }
-    // 7. furniture & wall objects
+    if (this.milkBottle?.contains?.(x, y, this.house.activeRoomId)) {
+      this.milkBottle.poke();
+      return;
+    }
+    // 8. furniture & wall objects
     const hit = this.room.tapFurniture(x, y);
+    if (this.tapKitchenFurniture(hit)) return;
     if (hit === 'tv') {
       this.room.tv.on = this.room.tv.on > 0 ? 0 : 12;
       this.sound.ackBeep();
@@ -478,56 +824,75 @@ export class Game {
       return;
     }
     if (hit === 'plant') {
+      const plant = this.roomFurniture('plant');
+      if (!plant) return;
       this.room.plantSway = 1;
       this.sound.whoosh();
       // leaves tumble down for the robot to eat — the pot's own footprint is
-      // solid, so hunt for clear floor just left of and below it
+      // solid, so derive clear landing points from the plant's current layout.
+      const center = (this.room.bounds.minX + this.room.bounds.maxX) / 2;
+      const inward = plant.cx > center ? -1 : 1;
+      const floorY = plant.foot ? plant.foot.y + plant.foot.h : plant.cy + plant.h / 2;
       let dropped = 0;
       for (let i = 0; i < 24 && dropped < 2; i++) {
-        const lx = 1505 + rand(-170, 30);
-        const ly = 900 + rand(-45, 45);
+        const lx = plant.cx + inward * rand(plant.w * 0.4, plant.w * 1.05);
+        const ly = floorY + rand(-35, 55);
         if (this.room.isFree(lx, ly, 30)) {
-          this.dirt.spawn('leaf', lx, ly, { drop: rand(120, 200) });
+          this.dirt.spawn('leaf', lx, ly, { drop: rand(120, 200), roomId: this.room.id });
           dropped++;
         }
       }
-      const d = this.dirt.nearestVac(r.x, r.y, false);
+      const d = this.dirt.nearestVac(r.x, r.y, false, this.room.id);
       if (d && chance(0.6)) r.notifyNewDirt(d);
       return;
     }
     if (hit === 'toybox') {
+      const toybox = this.roomFurniture('toybox');
+      if (!toybox) return;
       // a toy LAUNCHES clear across the room!
       const kind = pick(['toy_ball', 'toy_block']);
+      const source = {
+        x: toybox.cx,
+        y: toybox.cy - toybox.h * 0.22,
+      };
       let spot = null;
       for (let i = 0; i < 30; i++) {
         const p = this.room.randomFloorPoint(45);
-        if (dist(p.x, p.y, 1535, 585) > 380 && this.room.isFree(p.x, p.y, 45, { solidTable: true })) {
+        if (dist(p.x, p.y, source.x, source.y) > Math.max(320, toybox.w * 1.4) &&
+            this.room.isFree(p.x, p.y, 45, { solidTable: true })) {
           spot = p;
           break;
         }
       }
       if (!spot) spot = this.room.randomFloorPoint(45);
-      const t = this.dirt.spawn(kind, 1505, 545, {});
+      const t = this.dirt.spawn(kind, source.x, source.y, { roomId: this.room.id });
       t.scale = 0.25; // grows as it pops out
       this.dirt.toss(t, spot.x, spot.y);
       this.sound.pop();
       this.sound.whoosh();
-      this.particles.sparkle(1520, 530, 6);
+      this.particles.sparkle(source.x, source.y, 6, this.room.id);
       return;
     }
     if (hit === 'couch') {
+      const couch = this.roomFurniture('couch');
+      if (!couch) return;
       this.shakeCouch = 0.4;
       this.sound.squeak();
       if (chance(0.35)) {
         // a shy dust bunny scoots out from under the couch
-        const d = this.dirt.spawn('dustbunny', this.room.couch.cx + rand(-140, 140), 730, {});
+        const frontY = couch.foot?.y ?? couch.cy - couch.h * 0.3;
+        const d = this.dirt.spawn('dustbunny', couch.cx + rand(-couch.w * 0.27, couch.w * 0.27), frontY - 30, {
+          roomId: this.room.id,
+        });
         d.vy = 60;
-        this.particles.dustPuff(d.x, 740, 4);
+        this.particles.dustPuff(d.x, frontY - 20, 4, undefined, this.room.id);
       }
       return;
     }
     if (hit === 'catbed') {
-      if (dist(this.dog.x, this.dog.y, this.room.furniture[4].cx, this.room.furniture[4].cy) < 120) {
+      const bed = this.roomFurniture('catbed');
+      if (bed && this.dog.roomId === this.room.id &&
+          dist(this.dog.x, this.dog.y, bed.cx, bed.cy) < 120) {
         this.dog.onTap();
       } else {
         this.sound.squeak();
@@ -538,17 +903,17 @@ export class Game {
       this.popSockOut();
       return;
     }
-    // 8. tap the floor: sprinkle a mess for Robo to clean!
+    // 9. tap the floor: sprinkle a mess for Robo to clean!
     const b = this.room.bounds;
     if (x > b.minX - 40 && x < b.maxX + 40 && y > b.minY - 30 && y < b.maxY + 40) {
-      this.dirt.playerSprinkle(x, y);
+      this.dirt.playerSprinkle(x, y, this.room.id);
       this.sound.pop();
-      this.particles.dustPuff(x, y, 3, 'rgba(255, 230, 180, 0.5)');
-      const d = this.dirt.nearestVac(r.x, r.y, true);
+      this.particles.dustPuff(x, y, 3, 'rgba(255, 230, 180, 0.5)', this.room.id);
+      const d = this.dirt.nearestVac(r.x, r.y, true, this.room.id);
       if (d) r.notifyNewDirt(d);
     } else {
       // wall tap — just sparkle
-      this.particles.sparkle(x, y, 4);
+      this.particles.sparkle(x, y, 4, this.room.id);
       this.sound.pop();
     }
   }
@@ -561,7 +926,7 @@ export class Game {
       return;
     }
     const busyDocking = ['align', 'empty', 'charge', 'docked'].includes(r.state);
-    if (this.actions.busy || busyDocking || r.state === 'godock') {
+    if (this.actions.busy || busyDocking || r.state === 'godock' || r.isRoomTraveling?.()) {
       // mini reaction instead of a full event
       this.sound.happyBeeps(2);
       this.particles.hearts(r.x, r.y - 60, 2);
@@ -594,14 +959,23 @@ export class Game {
     this.splash.update(dt);
     if (this.splash.active && !this.splash.fading) return;
     this.room.update(dt);
-    this.ambience.update(dt);
-    this.dock.update(dt);
+    if (this.dock.roomId === this.house.activeRoomId) this.dock.update(dt);
     this.robot.update(dt);
+    this.syncRoomInteractionState();
+    // The kitchen mat clock observes the robot's resolved movement, then only
+    // starts a jam on a genuine outside-to-inside crossing.
+    this.updateMatJam(dt);
+    this.ambience.update(dt);
     this.dirt.update(dt);
-    this.dog.update(dt);
-    this.actions.update(dt);
-    this.particles.update(dt);
+    if (this.dog.roomId === this.house.activeRoomId) this.dog.update(dt);
+    // The bottle and floor field advance before actions inspect wet work. This
+    // prevents MopMode from finishing in a transient gap between poured drops.
+    this.milkBottle.update(dt);
     this.smears.update(dt);
+    this.actions.update(dt);
+    // Controlled actions advance their own room travel after Robot.update().
+    this.syncRoomInteractionState();
+    this.particles.update(dt);
     this.cutaway.update(dt);
     this.hud.update(dt);
     this.dim = damp(this.dim, this.dimTarget, 4, dt);
@@ -611,28 +985,29 @@ export class Game {
     if (this.sockFetchT <= 0) {
       this.sockFetchT = 7;
       if (!this.actions.busy && this.robot.state === 'clean' && !this.robot.stayDocked &&
-          this.dirt.items.some((d) => d.type === 'sock')) {
+          !this.robot.isRoomTraveling?.() &&
+          this.dirt.items.some((d) => d.roomId === this.robot.roomId && d.type === 'sock')) {
         this.actions.triggerByName('sockGrab');
       }
     }
 
-    // ---- the poopocalypse pipeline ----------------------------------------
+    // ---- the wet-mess pipeline --------------------------------------------
     // 1. the robot blunders into a fresh pile (it has no idea — and mop pads
     // are NO protection: it smears with those on too, it just gets to skip
     // the pad-install dock trip before cleaning up)
     const r0 = this.robot;
     if (r0.smearT <= 0 && r0.z <= 0 && Math.abs(r0.speed) > 25) {
       for (const d of this.dirt.items) {
-        if (d.type !== 'poop' || d.drop > 0) continue;
+        if (d.roomId !== r0.roomId || d.type !== 'poop' || d.drop > 0) continue;
         if (dist(d.x, d.y, r0.x, r0.y) < r0.radius * 0.85) {
           this.dirt.remove(d);
-          this.smears.splat(d.x, d.y);
+          this.smears.splat(d.x, d.y, { roomId: d.roomId });
           r0.smearT = 5.2; // blissfully spreading it for a while
           r0.smearDist = 20;
           r0.fateTarget = null;
           this.sound.splat();
           this.shake(4);
-          this.particles.dustPuff(d.x, d.y, 8, 'rgba(150, 110, 70, 0.5)');
+          this.particles.dustPuff(d.x, d.y, 8, 'rgba(150, 110, 70, 0.5)', d.roomId);
           break;
         }
       }
@@ -640,16 +1015,29 @@ export class Game {
     // 2. the awful realization → forced mop mode (also mops leftovers).
     // If the dock can't support mopping, the robot complains ONCE and the
     // mess waits until a human services the tanks.
-    if (this.pendingMop || (this.smears.count > 0 && !r0.mopMode && r0.smearT <= 0)) {
+    const directPuddle = this.smears.findPuddle?.();
+    const needsWetCleanup = !!directPuddle && r0.smearT <= 0;
+    const readyWetWork = this.smears.hasReadyForMop?.() ?? this.smears.count > 0;
+    if (this.pendingMop || needsWetCleanup ||
+        (readyWetWork && !r0.mopMode && r0.smearT <= 0)) {
+      if (!this.pendingMopRoomId && (this.pendingMop || directPuddle)) {
+        this.pendingMopRoomId = directPuddle?.roomId ?? r0.roomId;
+      }
       const dockStates = ['align', 'empty', 'charge', 'docked'];
       const allowed = this.dock.canMop() || !this.mopComplained;
-      // (a trapped robot can't rush off to mop — the mess waits for the rescue)
-      if (allowed && !dockStates.includes(r0.state) && this.actions.current?.name !== 'mopMode' &&
-          this.actions.current?.name !== 'trapped') {
-        this.pendingMop = false;
-        this.actions.force('mopMode');
+      // A trapped robot or a dog still making the puddle cannot start cleanup;
+      // the persistent floor mark keeps the request alive for a later retry.
+      if (allowed && !this.dog.pooping() && !dockStates.includes(r0.state) &&
+          this.actions.current?.name !== 'mopMode' &&
+          !this.actions.current?.blocksWetCleanup && !r0.isRoomTraveling?.()) {
+        if (this.actions.force('mopMode')) {
+          // MopMode.start reads the incident room synchronously.
+          this.pendingMop = false;
+          this.pendingMopRoomId = null;
+        }
       } else if (!allowed) {
         this.pendingMop = false;
+        this.pendingMopRoomId = null;
       }
     }
     // ambient mopping: pads wipe whatever they pass over (not while the robot
@@ -660,7 +1048,7 @@ export class Game {
         if (!r0.trailMode) r0.trailMode = 'mop';
       }
       if (r0.smearT <= 0) {
-        const wiped = this.smears.wipeAt(r0.x, r0.y, 64);
+        const wiped = this.smears.wipeAt(r0.x, r0.y, 64, r0.roomId);
         if (wiped > 0) {
           this.mopDirt = clamp(this.mopDirt + wiped * 0.02, 0, 1);
           this.squeegeeT = (this.squeegeeT ?? 0) - dt;
@@ -673,6 +1061,7 @@ export class Game {
               x: r0.x + rand(-30, 30), y: r0.y + rand(0, 34),
               kind: 'bubble', size: rand(5, 10), life: rand(0.4, 0.8),
               vy: rand(-40, -12), vx: rand(-16, 16),
+              roomId: r0.roomId,
             });
           }
         }
@@ -684,16 +1073,16 @@ export class Game {
     }
 
     // the LAST speck, sock and toy is gone → throw the all-clean victory party!
-    if (this.roomDirty && !this.actions.busy && ['clean', 'seek'].includes(r0.state) &&
-        !r0.stayDocked && r0.smearT <= 0 && this.smears.count === 0 && !this.pendingMop &&
-        !this.dog.pooping() && this.dirt.items.length === 0) {
+    if (cleanVictoryReady(this, r0)) {
       this.roomDirty = false;
+      this.finalVacuumRoomId = null;
       this.actions.force('winParty');
     }
 
     // pads dirty → wash trip; player-chosen mode mismatch → equipment trip
     const idleEnough = !this.actions.busy && ['clean', 'seek'].includes(r0.state) &&
-      !r0.stayDocked && r0.smearT <= 0 && this.smears.count === 0 && !this.pendingMop;
+      !r0.stayDocked && !r0.isRoomTraveling?.() && r0.smearT <= 0 &&
+      this.smears.count === 0 && !this.pendingMop;
     if (idleEnough) {
       if (r0.mopMode && this.mopDirt >= 1 && (this.dock.canMop() || !this.mopComplained)) {
         this.actions.force('washTrip');
@@ -719,14 +1108,18 @@ export class Game {
     this.fateT = (this.fateT ?? 3) - dt;
     if (this.fateT <= 0) {
       this.fateT = 2.5;
-      const pile = this.dirt.items.find((d) => d.type === 'poop' && d.age > 4 && !d.fated);
-      if (pile && !this.actions.busy && ['clean', 'seek'].includes(r0.state) &&
+      const pile = this.dirt.items.find((d) =>
+        d.roomId === r0.roomId && d.type === 'poop' && d.age > 4 && !d.fated
+      );
+      if (pile && !r0.fateTarget && !this.actions.busy && ['clean', 'seek'].includes(r0.state) &&
           !r0.stayDocked && r0.smearT <= 0) {
         pile.fated = true;
         const a = angleTo(r0.x, r0.y, pile.x, pile.y);
         const fx = pile.x + Math.cos(a) * 150;
         const fy = pile.y + Math.sin(a) * 150;
-        r0.fateTarget = this.room.isFree(fx, fy, 60) ? { x: fx, y: fy } : { x: pile.x, y: pile.y };
+        r0.fateTarget = this.room.isFree(fx, fy, 60)
+          ? { x: fx, y: fy, roomId: pile.roomId, pile }
+          : { x: pile.x, y: pile.y, roomId: pile.roomId, pile };
         r0.state = 'clean';
         r0.seekDirt = null;
         r0.bump = null;
@@ -741,7 +1134,9 @@ export class Game {
     if (this.toyTidyT <= 0) {
       this.toyTidyT = 9;
       if (!this.actions.busy && this.robot.state === 'clean' && !this.robot.stayDocked &&
-          this.dirt.items.some((d) => (d.type === 'toy_ball' || d.type === 'toy_block') && !d.toss && !d.fading)) {
+          !this.robot.isRoomTraveling?.() &&
+          this.dirt.items.some((d) => d.roomId === this.robot.roomId &&
+            (d.type === 'toy_ball' || d.type === 'toy_block') && !d.toss && !d.fading)) {
         this.actions.triggerByName('tidyToy');
       }
     }
@@ -751,6 +1146,7 @@ export class Game {
     if (this.dogChaseT <= 0) {
       this.dogChaseT = rand(110, 200);
       if (!this.actions.busy && !this.messActive() && !r0.stayDocked &&
+          !r0.isRoomTraveling?.() && this.dog.roomId === r0.roomId &&
           ['clean', 'seek'].includes(r0.state)) {
         this.dog.startChase();
       }
@@ -761,9 +1157,11 @@ export class Game {
     if (this.trapT <= 0) {
       this.trapT = rand(130, 220);
       if (!this.actions.busy && r0.state === 'clean' && !r0.stayDocked &&
-          !this.messActive() && !this.dock.anyAlert() && this.dog.state !== 'ride' &&
+          !r0.isRoomTraveling?.() && !this.messActive() && !this.dock.anyAlert() &&
+          this.dog.state !== 'ride' &&
           r0.battery > 0.3 && r0.bin < 0.9 &&
-          r0.mopMode === this.modeNeedsPads() && !(r0.mopMode && this.mopDirt >= 1)) {
+          r0.mopMode === this.modeNeedsPads() && !(r0.mopMode && this.mopDirt >= 1) &&
+          (this.roomFurniture('couch') || this.roomFurniture('table'))) {
         this.actions.force('trapped');
       }
     }
@@ -774,7 +1172,8 @@ export class Game {
     if (this.autoEventT <= 0) {
       this.autoEventT = rand(50, 90);
       const idle = this.time - (this.lastInteraction ?? 0) > 20;
-      if (idle && !this.actions.busy && this.robot.state === 'clean') {
+      if (idle && !this.actions.busy && this.robot.state === 'clean' &&
+          !this.robot.isRoomTraveling?.()) {
         this.actions.triggerByName(pick(['happyBeeps', 'dogRide', 'bounceParty', 'spinDance', 'tidyToy']));
       }
     }
@@ -784,7 +1183,8 @@ export class Game {
 
     // robot pushes toy balls around
     for (const d of this.dirt.items) {
-      if (d.type !== 'toy_ball' && d.type !== 'toy_block') continue;
+      if (d.roomId !== this.robot.roomId ||
+          (d.type !== 'toy_ball' && d.type !== 'toy_block')) continue;
       const dd = dist(d.x, d.y, this.robot.x, this.robot.y);
       if (dd < this.robot.radius + 24 && Math.abs(this.robot.speed) > 30) {
         const a = Math.atan2(d.y - this.robot.y, d.x - this.robot.x);
@@ -806,8 +1206,11 @@ export class Game {
         const x = rand(300, 1400);
         const y = rand(180, 480);
         this.sound.fireworkBurst();
-        this.particles.burst(x, y, 'star', 24, { speedMin: 100, speedMax: 340, lifeMin: 0.6, lifeMax: 1.4, gravity: 150 });
-        this.particles.confettiBurst(x, y, 20);
+        this.particles.burst(x, y, 'star', 24, {
+          speedMin: 100, speedMax: 340, lifeMin: 0.6, lifeMax: 1.4,
+          gravity: 150, roomId: r0.roomId,
+        });
+        this.particles.confettiBurst(x, y, 20, r0.roomId);
       }
       if (c.t > 3.2) this.celebration = null;
     }
@@ -829,75 +1232,9 @@ export class Game {
       (this.offY + shakeY) * this.dpr
     );
 
-    // world
-    this.room.drawBase(ctx, this.assets);
-    this.ambience.draw(ctx);
-    this.room.drawTV(ctx);
-    this.smears.draw(ctx); // floor stains sit under everything that moves
-    this.robot.drawTrail(ctx);
-    this.dirt.draw(ctx, this.assets);
-    this.actions.drawUnder(ctx);
-
-    // y-sorted entities
-    const entries = [];
-    for (const f of this.room.furniture) {
-      entries.push({
-        baseline: f.baseline,
-        draw: () => {
-          if (f.name === 'couch' && this.shakeCouch > 0) {
-            ctx.save();
-            ctx.translate(rand(-2.5, 2.5), rand(-1.5, 1.5));
-            this.room.drawFurniture(ctx, this.assets, f);
-            ctx.restore();
-          } else {
-            this.room.drawFurniture(ctx, this.assets, f);
-          }
-        },
-      });
-    }
-    entries.push({ baseline: this.dock.baseline, draw: () => this.dock.draw(ctx, this.assets) });
-    entries.push({
-      baseline: this.robot.y,
-      draw: () => {
-        this.robot.draw(ctx, this.assets);
-        if (this.hatTime > 0) this.drawHat(ctx);
-      },
-    });
-    entries.push({ baseline: this.dog.baseline, draw: () => this.dog.draw(ctx, this.assets) });
-    entries.sort((a, b) => a.baseline - b.baseline);
-    for (const e of entries) e.draw();
-
-    // dim for disco
-    if (this.dim > 0.01) {
-      ctx.fillStyle = `rgba(18, 10, 40, ${this.dim})`;
-      ctx.fillRect(0, 0, WORLD_W, WORLD_H);
-    }
-
-    this.actions.drawOver(ctx);
-    this.particles.draw(ctx);
-    this.cutaway.draw(ctx);
-
-    // sock riding the finger
-    if (this.dragSock) {
-      const s = this.dragSock;
-      ctx.fillStyle = 'rgba(80, 45, 25, 0.2)';
-      ctx.beginPath();
-      ctx.ellipse(s.x, s.y + 34, 22, 8, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.save();
-      ctx.translate(s.x, s.y - 14);
-      ctx.rotate(Math.sin(this.time * 6) * 0.12);
-      const img = this.assets.getTinted('sock', s.tint);
-      if (img) {
-        ctx.drawImage(img, -38, -38, 76, 76);
-      } else {
-        ctx.fillStyle = s.tint;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 18, 30, 0.4, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
+    // House chooses exactly one full-size scene. During a doorway crossing it
+    // also supplies the small directional pan and paints the transition wash.
+    this.house.drawTransition(ctx, (room, roomCtx) => this.drawRoomScene(roomCtx, room));
 
     // cozy vignette
     const vg = ctx.createRadialGradient(WORLD_W / 2, WORLD_H / 2, WORLD_H * 0.55, WORLD_W / 2, WORLD_H / 2, WORLD_H * 1.05);
@@ -910,6 +1247,119 @@ export class Game {
 
     // title screen on top of everything
     this.splash.draw(ctx);
+  }
+
+  drawRoomScene(ctx, room) {
+    room.drawBase(ctx, this.assets);
+    // A controlled action can cross at the end of update(), after Ambience's
+    // normal tick. Resync here as well so the first kitchen frame never shows
+    // the living-room sunbeam (or vice versa).
+    this.ambience.syncRoom?.();
+    this.ambience.draw(ctx);
+    room.drawTV?.(ctx);
+    this.smears.draw(ctx); // floor stains sit under everything that moves
+    this.robot.drawTrail(ctx);
+    this.dirt.draw(ctx, this.assets);
+
+    const transitionPose = this.house.transition?.robot
+      ? this.house.transitionPose()
+      : null;
+    const robotVisible = this.robot.roomId === room.id && (!transitionPose || transitionPose.visible);
+    if (robotVisible) this.actions.drawUnder(ctx);
+
+    // Furniture and actors share one baseline sort, preserving the original
+    // room's convincing "in front of / behind" behavior in the kitchen too.
+    const entries = [];
+    for (const furniture of room.furniture) {
+      entries.push({
+        baseline: furniture.baseline,
+        draw: () => {
+          const shaking = furniture.name === 'couch' && this.shakeCouch > 0;
+          ctx.save();
+          if (shaking) ctx.translate(rand(-2.5, 2.5), rand(-1.5, 1.5));
+          if (room.id === 'kitchen' && furniture.name === 'fridge') {
+            this.drawFridgeLight(ctx, room, furniture);
+          }
+          room.drawFurniture(ctx, this.assets, furniture);
+          ctx.restore();
+        },
+      });
+    }
+    if (this.milkBottle?.roomId === room.id) {
+      entries.push({
+        baseline: this.milkBottle.baseline(room),
+        draw: () => this.milkBottle.draw(ctx),
+      });
+    }
+    if (this.dock.roomId === room.id) {
+      entries.push({ baseline: this.dock.baseline, draw: () => this.dock.draw(ctx, this.assets) });
+    }
+    if (robotVisible) {
+      entries.push({
+        baseline: this.robot.y,
+        draw: () => {
+          this.robot.draw(ctx, this.assets);
+          if (this.hatTime > 0) this.drawHat(ctx);
+        },
+      });
+    }
+    const dogVisible = this.dog.roomId === room.id &&
+      (this.dog.state !== 'ride' || robotVisible);
+    if (dogVisible) {
+      entries.push({ baseline: this.dog.baseline, draw: () => this.dog.draw(ctx, this.assets) });
+    }
+    entries.sort((a, b) => a.baseline - b.baseline);
+    for (const entry of entries) entry.draw();
+
+    // dim for disco
+    if (this.dim > 0.01) {
+      ctx.fillStyle = `rgba(18, 10, 40, ${this.dim})`;
+      ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+    }
+
+    if (robotVisible) this.actions.drawOver(ctx);
+    this.particles.draw(ctx);
+    this.cutaway.draw(ctx);
+    if (this.dragSock && (this.dragSock.roomId ?? room.id) === room.id) {
+      this.drawDraggedSock(ctx, this.dragSock);
+    }
+  }
+
+  drawFridgeLight(ctx, room, fridge) {
+    if (room.fridgeWobble <= 0) return;
+    const alpha = clamp(room.fridgeWobble / 0.8, 0, 1);
+    const glowX = fridge.cx - fridge.w * 0.34;
+    const glowY = fridge.cy + fridge.h * 0.16;
+    ctx.save();
+    const glow = ctx.createRadialGradient(glowX, glowY, 8, glowX, glowY, fridge.w * 0.82);
+    glow.addColorStop(0, `rgba(255, 250, 190, ${0.52 * alpha})`);
+    glow.addColorStop(0.55, `rgba(255, 229, 130, ${0.2 * alpha})`);
+    glow.addColorStop(1, 'rgba(255, 229, 130, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.ellipse(glowX, glowY + fridge.h * 0.18, fridge.w * 0.82, fridge.h * 0.42, -0.12, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  drawDraggedSock(ctx, sock) {
+    ctx.fillStyle = 'rgba(80, 45, 25, 0.2)';
+    ctx.beginPath();
+    ctx.ellipse(sock.x, sock.y + 34, 22, 8, 0, 0, TAU);
+    ctx.fill();
+    ctx.save();
+    ctx.translate(sock.x, sock.y - 14);
+    ctx.rotate(Math.sin(this.time * 6) * 0.12);
+    const img = this.assets.getTinted('sock', sock.tint);
+    if (img) {
+      ctx.drawImage(img, -38, -38, 76, 76);
+    } else {
+      ctx.fillStyle = sock.tint;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 18, 30, 0.4, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   drawHat(ctx) {

@@ -12,6 +12,7 @@ import { TurboZoom, RainbowTrail, BubbleParty, DiscoMode, HoverMode, UnderCouch,
 import { SockGrab, TidyToy } from './chores.js';
 import { ModeSwitch, WashTrip, MopMode } from './dockTrips.js';
 import { Trapped } from './trapped.js';
+import { MatJam } from './matJam.js';
 
 export function registerDefaultActions(reg) {
   reg.register(SpinDance);
@@ -32,5 +33,6 @@ export function registerDefaultActions(reg) {
   reg.register(ModeSwitch);
   reg.register(WashTrip);
   reg.register(Trapped);
+  reg.register(MatJam);
   reg.register(WinParty);
 }

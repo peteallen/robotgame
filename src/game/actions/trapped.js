@@ -3,6 +3,11 @@
 // it back on open floor. Game.js routes press-and-drag to grab/place/poke.
 import { TAU, rand, pick, clamp, lerp } from '../core/math.js';
 
+function roomFurniture(g, name) {
+  return g.room?.getFurniture?.(name) ??
+    g.room?.furniture?.find((item) => item.name === name) ?? null;
+}
+
 // ------------------------------------------------- trapped! (rescue me) -----
 // The robot wedges itself under the couch arm or the coffee table — sticking
 // out just enough to grab — flashes its status light red and cries for help.
@@ -12,10 +17,20 @@ export const Trapped = {
   name: 'trapped',
   weight: 0,
   canRun: () => false,
+  blocksWetCleanup: true,
+  canForce: (g) => !!roomFurniture(g, 'couch') || !!roomFurniture(g, 'table'),
   maxDur: 100000, // waits for its hero as long as it takes
   start(g) {
-    const couch = g.room.couch;
-    const kind = pick(['couch', 'table']);
+    const couch = roomFurniture(g, 'couch');
+    const table = roomFurniture(g, 'table');
+    const choices = [couch && 'couch', table && 'table'].filter(Boolean);
+    if (!choices.length) {
+      // The kitchen has an island, but no safe authored rescue pose yet.
+      this.finished = true;
+      return;
+    }
+    const kind = pick(choices);
+    const roomId = g.robot.roomId ?? g.room?.id ?? 'living';
     // Wedge spots measured from sprite pixels (couch paint's right edge at the
     // robot's row is world x≈560; the tabletop lip between the legs ends at
     // y≈575) so the robot ends up ~2/3 hidden with a grabbable bit poking out.
@@ -24,6 +39,7 @@ export const Trapped = {
       ? {
           kind,
           phase: 'drive', t: 0,
+          roomId,
           stage: { x: couch.cx + 380, y: 862 },
           wedge: { x: couch.cx + 206, y: 862 }, // lands ≈548: 45px sticks out
           inHeading: Math.PI, // nose under the couch arm, rear sticking out
@@ -32,8 +48,9 @@ export const Trapped = {
       : {
           kind,
           phase: 'drive', t: 0,
-          stage: { x: 876, y: 782 },
-          wedge: { x: 876, y: 598 }, // lands ≈612: nose tucked under the lip
+          roomId,
+          stage: { x: table.cx + 36, y: table.cy + 217 },
+          wedge: { x: table.cx + 36, y: table.cy + 33 }, // lands ≈612: nose tucked under the lip
           inHeading: -Math.PI / 2, // nose under the tabletop, rear poking out
           pleadT: 0, chirpT: 0, strainT: 0,
         };
@@ -42,6 +59,10 @@ export const Trapped = {
   update(g, dt) {
     const r = g.robot;
     const st = this.state;
+    if (!st?.roomId || r.roomId !== st.roomId) {
+      this.finished = true;
+      return;
+    }
     st.t += dt;
     switch (st.phase) {
       case 'drive': {

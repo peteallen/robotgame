@@ -6,9 +6,25 @@ import { roundRect } from '../world/Room.js';
 
 // ---------------- shared dock-trip helper (mop gear lives at the dock) ------
 
+// Room travel for an action that already owns robot control. The Robot helper
+// returns true only after the robot has emerged into the destination room.
+export function roomTravelStep(g, targetRoomId, dt) {
+  const r = g.robot;
+  const currentRoomId = r.roomId ?? g.room?.id;
+  if (!targetRoomId || (currentRoomId === targetRoomId && !r.isRoomTraveling?.())) return true;
+  return r.travelToRoomStep?.(targetRoomId, dt) ?? false;
+}
+
 // back-in docking maneuver; returns true when parked
 export function dockManeuverStep(g, st, dt) {
   const r = g.robot;
+  const dockRoomId = g.dock.roomId ?? 'living';
+  const currentRoomId = r.roomId ?? g.room?.id ?? dockRoomId;
+  if (currentRoomId !== dockRoomId || r.isRoomTraveling?.()) {
+    // Controlled actions keep ownership of the robot while the reusable room
+    // travel helper visibly drives through both sides of the doorway.
+    if (!roomTravelStep(g, dockRoomId, dt)) return false;
+  }
   switch (st.dockPhase) {
     case 'go': {
       if (r.driveTo(g.dock.approach.x, g.dock.approach.y, 195, 28, { ignoreDock: true })) {

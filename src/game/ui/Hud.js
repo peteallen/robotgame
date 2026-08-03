@@ -2,22 +2,38 @@
 // sound toggle top-right. The battery gauge lives ON the robot itself.
 import { TAU, clamp, lerp } from '../core/math.js';
 import { roundRect } from '../world/Room.js';
+import { Minimap } from './Minimap.js';
 
 export class Hud {
   constructor(game) {
     this.game = game;
     this.t = 0;
     this.soundBtnPop = 0;
+    this.minimap = new Minimap(game);
   }
 
   update(dt) {
     this.t += dt;
     if (this.soundBtnPop > 0) this.soundBtnPop -= dt * 3;
+    this.minimap.update(dt);
+  }
+
+  // Lets the game capture a HUD press before it can turn into a floor drag.
+  // This includes the full minimap card, not just its two room buttons.
+  hitTest(x, y) {
+    if (this.minimap.hitTest(x, y)) return true;
+    for (let i = 0; i < 3; i++) {
+      const sx = 22 + 10 + i * 76;
+      const sy = 90 + 8;
+      if (x > sx - 6 && x < sx + 70 + 6 && y > sy - 6 && y < sy + 50 + 6) return true;
+    }
+    return Math.hypot(x - 1610, y - 66) < 52;
   }
 
   // returns true if the tap was consumed by the HUD
   onTap(x, y) {
     const g = this.game;
+    if (this.minimap.onTap(x, y)) return true;
     // mode picker slots (pill origin 22, 90) — generous fat-finger padding
     const modes = ['vac', 'mop', 'both'];
     for (let i = 0; i < 3; i++) {
@@ -213,6 +229,9 @@ export class Hud {
       ctx.stroke();
     }
     ctx.restore();
+
+    // ---- two-room house map (bottom-right)
+    this.minimap.draw(ctx);
   }
 
   drawPill(ctx, x, y, w, drawContent) {

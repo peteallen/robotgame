@@ -5,6 +5,7 @@ import { roundRect, starPath } from '../world/Room.js';
 
 const VAC_TYPES = ['crumbs', 'cereal', 'dustbunny', 'leaf', 'sparkle'];
 const TAP_CYCLE = ['crumbs', 'cereal', 'dustbunny', 'sparkle', 'leaf'];
+const FLOOR_ITEM_HUD_CLEARANCE = 24;
 
 let nextId = 1;
 
@@ -15,8 +16,30 @@ export class DirtSystem {
     this.tapCycleIdx = 0;
   }
 
+  activeRoomId() {
+    return this.game.house?.activeRoomId ?? this.game.robot?.roomId ?? this.game.room?.id ?? 'living';
+  }
+
+  robotRoomId(robot = this.game.robot) {
+    return robot?.roomId ?? this.game.house?.activeRoomId ?? this.game.room?.id ?? 'living';
+  }
+
+  roomFor(roomId) {
+    return this.game.house?.room(roomId) ?? this.game.room;
+  }
+
+  // This remains a whole-house count so existing victory and HUD code can
+  // reason about all persistent dirt, including dirt in a hidden room.
   count() {
     return this.items.filter((d) => !d.sucking && d.vac).length;
+  }
+
+  countIn(roomId = this.robotRoomId()) {
+    return this.items.filter((d) => d.roomId === roomId && !d.sucking && d.vac).length;
+  }
+
+  hasIn(roomId, predicate = () => true) {
+    return this.items.some((d) => d.roomId === roomId && predicate(d));
   }
 
   spawn(type, x, y, opts = {}) {
@@ -24,6 +47,7 @@ export class DirtSystem {
       id: nextId++,
       type,
       x, y,
+      roomId: opts.roomId ?? this.robotRoomId(),
       vac: VAC_TYPES.includes(type),
       scale: 0,
       targetScale: opts.scale ?? rand(0.85, 1.15),
@@ -43,26 +67,34 @@ export class DirtSystem {
     // anything landing on the floor re-arms the all-clean celebration
     // (a robot that parked itself after a win stays put until tapped awake)
     this.game.roomDirty = true;
+    this.game.finalVacuumRoomId = null;
     return d;
   }
 
-  spawnRandom() {
-    const { x, y } = this.game.room.randomFloorPoint(40);
+  spawnRandom(roomId = this.robotRoomId()) {
+    const clearance = (this.game.robot?.radius ?? 62) + 8;
+    const { x, y } = this.roomFor(roomId).randomFloorPoint(clearance);
     const type = pick(VAC_TYPES);
-    this.spawn(type, x, y);
+    this.spawn(type, x, y, { roomId });
   }
 
   // A toddler tapped the floor: sprinkle a little cluster of mess!
-  playerSprinkle(x, y) {
+  playerSprinkle(x, y, roomId = this.activeRoomId()) {
+    const room = this.roomFor(roomId);
     const type = TAP_CYCLE[this.tapCycleIdx % TAP_CYCLE.length];
     this.tapCycleIdx++;
     const n = type === 'dustbunny' ? 1 : type === 'sparkle' ? 2 : 3;
     for (let i = 0; i < n; i++) {
       const a = rand(0, TAU);
       const r = i === 0 ? 0 : rand(18, 52);
-      const d = this.spawn(type, x + Math.cos(a) * r, y + Math.sin(a) * r, {
+      const rawX = x + Math.cos(a) * r;
+      const rawY = y + Math.sin(a) * r;
+      const point = room.nearestFreePoint?.(rawX, rawY, FLOOR_ITEM_HUD_CLEARANCE)
+        ?? { x: rawX, y: rawY };
+      const d = this.spawn(type, point.x, point.y, {
         playerMade: true,
         drop: rand(60, 140),
+        roomId,
       });
       d.dropV = 0;
     }
@@ -70,8 +102,15 @@ export class DirtSystem {
   }
 
   // small crumb while dragging finger
-  playerCrumb(x, y) {
-    this.spawn(pick(['crumbs', 'cereal']), x, y, { playerMade: true, drop: 40, scale: rand(0.6, 0.9) });
+  playerCrumb(x, y, roomId = this.activeRoomId()) {
+    const room = this.roomFor(roomId);
+    const point = room.nearestFreePoint?.(x, y, FLOOR_ITEM_HUD_CLEARANCE) ?? { x, y };
+    this.spawn(pick(['crumbs', 'cereal']), point.x, point.y, {
+      playerMade: true,
+      drop: 40,
+      scale: rand(0.6, 0.9),
+      roomId,
+    });
   }
 
   // launch an item in a big ballistic arc to a target spot
@@ -92,18 +131,21 @@ export class DirtSystem {
     // poking the dog...) so a fully-clean room stays clean and earns the party.
     // too many toys on the floor: the oldest one magically "gets put away"
     const toys = this.items.filter((d) => d.type === 'toy_ball' || d.type === 'toy_block');
-    if (toys.length > 5) {
-      const oldest = toys.reduce((a, b) => (a.age > b.age ? a : b));
+    for (const roomId of new Set(toys.map((d) => d.roomId))) {
+      const roomToys = toys.filter((d) => d.roomId === roomId);
+      if (roomToys.length <= 5) continue;
+      const oldest = roomToys.reduce((a, b) => (a.age > b.age ? a : b));
       if (!oldest.fading) {
         oldest.fading = true;
         oldest.targetScale = 0;
-        this.game.particles.sparkle(oldest.x, oldest.y, 6);
+        this.game.particles.sparkle(oldest.x, oldest.y, 6, oldest.roomId);
         setTimeout(() => this.remove(oldest), 600);
       }
     }
-    const room = this.game.room;
     for (let i = this.items.length - 1; i >= 0; i--) {
       const d = this.items[i];
+      const room = this.roomFor(d.roomId);
+      const previous = { x: d.x, y: d.y };
       d.age += dt;
       d.wobble += dt;
       d.scale = lerp(d.scale, d.targetScale, 1 - Math.exp(-10 * dt));
@@ -119,12 +161,13 @@ export class DirtSystem {
         if (ts.t >= 1) {
           d.toss = null;
           d.drop = 0;
-          this.game.particles.dustPuff(d.x, d.y, 5);
+          this.game.particles.dustPuff(d.x, d.y, 5, undefined, d.roomId);
           this.game.sound.boing();
           if (d.type === 'toy_ball') {
             d.vx = rand(-70, 70);
             d.vy = rand(-70, 70);
           }
+          this.keepOutOfHud(d, previous, room);
         }
         continue;
       }
@@ -134,7 +177,7 @@ export class DirtSystem {
         d.drop -= d.dropV * dt;
         if (d.drop <= 0) {
           d.drop = 0;
-          if (d.type !== 'sparkle') this.game.particles.dustPuff(d.x, d.y, 3);
+          if (d.type !== 'sparkle') this.game.particles.dustPuff(d.x, d.y, 3, undefined, d.roomId);
         }
       }
       // physics for rolled toys
@@ -155,10 +198,16 @@ export class DirtSystem {
         d.x += Math.sin(d.wobble * 0.6) * 3 * dt;
         d.y += Math.cos(d.wobble * 0.45) * 2 * dt;
       }
+      if (!d.sucking) this.keepOutOfHud(d, previous, room);
       // suck animation: spiral into the robot's mouth
       if (d.sucking) {
         d.suckT += dt / 0.3;
         const r = this.game.robot;
+        if (d.roomId !== this.robotRoomId(r)) {
+          d.sucking = false;
+          d.suckT = 0;
+          continue;
+        }
         const mouth = r.mouthPos();
         const t = easeInCubic(clamp(d.suckT, 0, 1));
         d.x = lerp(d.x, mouth.x, t * 0.6 + 0.2);
@@ -173,11 +222,33 @@ export class DirtSystem {
     }
   }
 
+  keepOutOfHud(item, previous, room = this.roomFor(item.roomId)) {
+    if (!room?.isHudFree || room.isHudFree(item.x, item.y, FLOOR_ITEM_HUD_CLEARANCE)) return false;
+    if (previous && room.isHudFree(previous.x, previous.y, FLOOR_ITEM_HUD_CLEARANCE)) {
+      item.x = previous.x;
+      item.y = previous.y;
+    } else {
+      const point = room.nearestFreePoint?.(
+        item.x,
+        item.y,
+        FLOOR_ITEM_HUD_CLEARANCE,
+      ) ?? room.randomFloorPoint(FLOOR_ITEM_HUD_CLEARANCE);
+      item.x = point.x;
+      item.y = point.y;
+    }
+    if (Math.abs(item.vx) > 1 || Math.abs(item.vy) > 1) {
+      item.vx *= -0.7;
+      item.vy *= -0.7;
+    }
+    return true;
+  }
+
   // find a vacuumable dirt near the robot's mouth
   trySuck(robot) {
     const mouth = robot.mouthPos();
+    const roomId = this.robotRoomId(robot);
     for (const d of this.items) {
-      if (!d.vac || d.sucking || d.drop > 0) continue;
+      if (d.roomId !== roomId || !d.vac || d.sucking || d.drop > 0) continue;
       const dx = d.x - mouth.x;
       const dy = d.y - mouth.y;
       if (dx * dx + dy * dy < 55 * 55) {
@@ -188,11 +259,11 @@ export class DirtSystem {
     }
   }
 
-  nearestVac(x, y, playerOnly = false) {
+  nearestVac(x, y, playerOnly = false, roomId = this.robotRoomId()) {
     let best = null;
     let bestD = Infinity;
     for (const d of this.items) {
-      if (!d.vac || d.sucking) continue;
+      if (d.roomId !== roomId || !d.vac || d.sucking) continue;
       if (d.shunned && d.shunned > this.game.time) continue;
       if (playerOnly && !d.playerMade) continue;
       const dd = (d.x - x) ** 2 + (d.y - y) ** 2;
@@ -204,7 +275,11 @@ export class DirtSystem {
     return best;
   }
 
-  find(predicate) {
+  find(predicate, roomId = this.robotRoomId()) {
+    return this.items.find((d) => d.roomId === roomId && predicate(d));
+  }
+
+  findAny(predicate = () => true) {
     return this.items.find(predicate);
   }
 
@@ -214,7 +289,9 @@ export class DirtSystem {
   }
 
   tapToy(x, y) {
+    const roomId = this.activeRoomId();
     for (const d of this.items) {
+      if (d.roomId !== roomId) continue;
       if (d.type !== 'toy_ball' && d.type !== 'toy_block') continue;
       if ((d.x - x) ** 2 + (d.y - y) ** 2 < 55 * 55) return d;
     }
@@ -222,7 +299,9 @@ export class DirtSystem {
   }
 
   draw(ctx, assets) {
+    const roomId = this.activeRoomId();
     for (const d of this.items) {
+      if (d.roomId !== roomId) continue;
       ctx.save();
       ctx.translate(d.x, d.y - d.drop);
       ctx.rotate(d.type === 'crumbs' || d.type === 'cereal' ? 0 : Math.sin(d.wobble) * 0.06 + (d.type.startsWith('toy') || d.type === 'sock' ? d.rot * 0.15 : 0));

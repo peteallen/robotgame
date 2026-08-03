@@ -1,10 +1,11 @@
 {
   "name": "robotgame",
   "version": "1.0.0",
-  "description": "Robo Sweep! A tablet-friendly, no-text toddler game about a robot vacuum cleaning a living room.",
+  "description": "Robo Sweep! A tablet-friendly, no-text toddler game about a robot vacuum cleaning a cozy two-room house.",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "node --test",
     "check:assets": "node scripts/check_assets.mjs",
     "check:dist": "node scripts/check_assets.mjs --dist",
     "build": "npm run check:assets && vite build && npm run check:dist",
@@ -12,5 +13,8 @@
   },
   "devDependencies": {
     "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "d3-contour": "^4.0.2"
   }
 }

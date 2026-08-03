@@ -117,8 +117,8 @@ function validateSourceReferences() {
 
   for (const file of jsSourceFiles()) {
     const text = fs.readFileSync(file, 'utf8');
-    spriteRefs.push(...collectRegexMatches(/\bassets\.get(?:Tinted)?\(\s*['"]([A-Za-z0-9_-]+)['"]/g, text, file, 'asset'));
-    spriteRefs.push(...collectRegexMatches(/\b(?:game|g|this)\.assets\.get(?:Tinted)?\(\s*['"]([A-Za-z0-9_-]+)['"]/g, text, file, 'asset'));
+    spriteRefs.push(...collectRegexMatches(/\bassets(?:\.|\?\.)get(?:Tinted)?(?:\?\.)?\(\s*['"]([A-Za-z0-9_-]+)['"]/g, text, file, 'asset'));
+    spriteRefs.push(...collectRegexMatches(/\b(?:game|g|this)(?:\.|\?\.)assets(?:\.|\?\.)get(?:Tinted)?(?:\?\.)?\(\s*['"]([A-Za-z0-9_-]+)['"]/g, text, file, 'asset'));
     spriteRefs.push(...collectRegexMatches(/\bsprite:\s*['"]([A-Za-z0-9_-]+)['"]/g, text, file, 'sprite'));
     for (const call of text.matchAll(/\bsfx\.play\(([^;\n]*)\)/g)) {
       const args = call[1] ?? '';

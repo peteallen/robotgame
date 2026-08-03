@@ -1,7 +1,7 @@
 # Robo Sweep! 🤖🧹
 
 A tablet-friendly, no-text toddler game about a robot vacuum cleaning a cozy
-living room. Made for a 3-year-old who loves the Roomba 650 and Roborock Z70.
+two-room house. Made for a 3-year-old who loves the Roomba 650 and Roborock Z70.
 
 ## Run
 
@@ -22,6 +22,12 @@ browser. Sound starts after the first tap (browser autoplay rules).
   and sparkles.
 - **Tap the floor** → sprinkle a mess for him to chase (cycles crumb types).
   **Drag your finger** → a whole crumb trail!
+- **Move between rooms** by tapping the glowing doorway or either room on the
+  bottom-right house map. Robo visibly drives through the doorway between his
+  living-room dock and the kitchen.
+- **The kitchen is playful too** — tap the cereal bowl on the island or the
+  trash bin to make a cleanable spill; tap the refrigerator, sink, or cabinets
+  for tidy light, bubble, and bounce reactions.
 - **Tap Robo** → a random surprise (13 of them): spin dance, turbo zoom,
   rainbow trail, bubble party (pop the bubbles!), disco mode, the robotic-arm
   sock grab (Roborock Z70 style!), toy tidy-up, cat ride, happy beeps,
@@ -73,10 +79,11 @@ browser. Sound starts after the first tap (browser autoplay rules).
   flashing until you tap him — "Thank you! Resuming cleaning." — then does the
   little relocalizing spin real robots do. A plain click won't free him; he
   has to be *carried*.
-- **Clean the whole floor → victory party.** Dirt only appears when someone
+- **Clean the whole house → victory party.** Dirt only appears when someone
   makes it (tap the floor, shake the plant for falling leaves, launch toys,
   pull socks out, poke the dog) — nothing falls on its own. When the last
-  speck, sock and toy is gone: "The room is all clean!", fireworks, and a
+  speck, sock and toy in both rooms is gone: "The whole house is clean!",
+  fireworks, and a
   proud pirouette with confetti — then he announces "Returning to dock",
   drives home, backs in, services himself, and NAPS on the pad until you tap
   him awake (new messes wait patiently for him to be started again).
@@ -95,10 +102,12 @@ browser. Sound starts after the first tap (browser autoplay rules).
   seek/dock state machine), LED-face expressions, on-body battery gauge,
   suction, dock service plan, red distress blink (trapped / dock blocked).
 - `src/game/entities/` — `Dock` (bag + water tanks, service anims), `DirtSystem`
-  (all floor items; spawning marks the room dirty), `Dog` (the corgi: naps,
+  (room-owned floor items; spawning marks the house dirty), `Dog` (the corgi: naps,
   rides, chases, poops), `Ambience` (sunbeam + motes).
-- `src/game/world/Room.js` — layout, furniture footprints/collision, tap zones,
-  procedural fallbacks for every sprite.
+- `src/game/world/House.js` — owns the two-room registry, reciprocal doorway
+  metadata, active scene, and the visual crossing handoff.
+- `src/game/world/Room.js` and `KitchenRoom.js` — living-room and kitchen
+  layouts, furniture footprints/collision, tap zones, and procedural fallbacks.
 - `src/game/actions/` — `ActionRegistry` (weighted, non-repeating) + themed
   modules (`celebrations`, `stunts`, `chores`, `dockTrips`, `trapped`)
   registered via `actions/index.js`; see that file for how to add one.
@@ -107,31 +116,38 @@ browser. Sound starts after the first tap (browser autoplay rules).
   fallbacks; `core/Voice.js` — spoken announcements.
 - `src/game/fx/` — `Particles` (confetti/dust/sparkles/hearts), `Smears`,
   `Cutaway` (undercarriage cam), `Splash` (title screen).
-- `src/game/ui/Hud.js` — icon-only dust-bin/mop pill, mode picker, sound
-  toggle (battery intentionally lives on the robot, not up here).
+- `src/game/ui/Hud.js` and `Minimap.js` — icon-only dust-bin/mop pill, mode
+  picker, sound toggle, and the two-room navigation map (battery intentionally
+  lives on the robot, not up here).
 
 ## Art pipeline
 
-Sprites generated with the `openrouter-image` skill
-(`google/gemini-3.1-flash-image-preview`, green/magenta screen prompts), then
-keyed + trimmed + aspect-padded by `scripts/process_art.py` into
-`public/assets/sprites/`. Raw renders live in `art/raw/` (not shipped).
-Regenerate one sprite: edit its prompt in `art/prompts.txt`, run
-`./art/gen.sh <name> "<prompt> <style suffix>"`, then
-`python3 scripts/process_art.py <name>`.
+Most sprites were generated with the `openrouter-image` skill
+(`google/gemini-3.1-flash-image-preview`, green/magenta screen prompts). The
+kitchen room, island, refrigerator, and bin were generated with Codex's built-in
+image tool using the existing room and furniture as visual references. All
+sources are keyed when necessary, then trimmed and aspect-padded by
+`scripts/process_art.py` into `public/assets/sprites/`; the full kitchen plate
+is emitted as an optimized WebP to keep startup quick. Raw renders and the
+kitchen chroma-key sources live in `art/raw/` (not shipped). Prompts are recorded
+in `art/prompts.txt`. For an OpenRouter sprite, run
+`./art/gen.sh <name> "<prompt> <style suffix>"`; for either source path, finish
+with `python3 scripts/process_art.py <name>`.
 
 Every sprite is optional — the game draws procedural stand-ins for anything
 missing, so it runs before/without generated art.
 
 ## Models
 
-Everything generated goes through OpenRouter. These are the defaults baked
-into each script (all overridable via the env var shown); change them here AND
-in the script comment if you switch:
+The scripted generation paths use OpenRouter; the kitchen expansion used
+Codex's built-in image tool. These are the defaults and one-off sources used by
+the project. Change this table and the corresponding script comment together
+when a scripted default changes:
 
 | Purpose | Model | Where | Override | Why this one |
 | --- | --- | --- | --- | --- |
 | Sprite/scene generation | `google/gemini-3.1-flash-image-preview` | `art/gen.sh` | `IMAGE_MODEL` | Nano Banana 2 — best quality/consistency for the locked art style; the lite default of the skill was skipped for fidelity. |
+| Kitchen room and furniture | Codex built-in image generation (`gpt-image-2`) | `art/prompts.txt`, reference images in `public/assets/sprites/` | — | Reference-guided generation matched the existing perspective and lighting; chroma-key furniture sources were converted to alpha before `process_art.py`. |
 | Image editing (variants) | `google/gemini-3.1-flash-image-preview` | `scripts/edit_image.py` | `EDIT_MODEL` | Same model as generation so edited variants (e.g. dust-bag states) stay pixel-consistent with their base sprite. |
 | Voice lines (TTS) | `openai/gpt-audio`, voice `coral` | `scripts/gen_voice.py` | `VOICE_MODEL`, `VOICE_NAME` | Only audio-output chat model that works on OpenRouter (`gpt-4o-audio-preview` is not a valid OpenRouter ID — 400s). Requires `stream: true` + `format: pcm16`; script wraps the PCM deltas into WAV (24 kHz mono). |
 | Voice QA (transcription) | `google/gemini-3.5-flash` | `scripts/verify_voice.py` | `TRANSCRIBE_MODEL` | `gpt-audio` too often ignores the audio attachment and answers the prompt instead; Gemini transcribes reliably. Every clip must pass verbatim transcription (`scripts/voice_qa_loop.sh`) — the TTS model sometimes *replies* to a line ("Thank you!" → "You're welcome") instead of reading it. |

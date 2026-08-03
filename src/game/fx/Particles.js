@@ -5,12 +5,21 @@ import { TAU, rand, pick, clamp, lerp } from '../core/math.js';
 const CONFETTI_COLORS = ['#ff5d8f', '#ffb42e', '#3ddad7', '#a685f5', '#7ed957', '#ff8a5c', '#4cc9f0'];
 
 export class Particles {
-  constructor() {
+  constructor(game = null) {
+    this.game = game;
     this.items = [];
     this.max = 500;
   }
 
-  add(p) {
+  currentRoomId() {
+    return this.game?.robot?.roomId ?? this.game?.house?.activeRoomId ?? this.game?.room?.id ?? 'living';
+  }
+
+  activeRoomId() {
+    return this.game?.house?.activeRoomId ?? this.game?.robot?.roomId ?? this.game?.room?.id ?? null;
+  }
+
+  add(p = {}) {
     if (this.items.length >= this.max) this.items.shift();
     this.items.push({
       x: 0, y: 0, vx: 0, vy: 0, ax: 0, ay: 0,
@@ -18,6 +27,7 @@ export class Particles {
       color: '#fff', kind: 'dot', wobble: rand(0, TAU), alpha: 1,
       z: 0, vz: 0, gz: 0, // pseudo-height for tossed items
       ...p,
+      roomId: p.roomId ?? this.currentRoomId(),
     });
   }
 
@@ -35,12 +45,13 @@ export class Particles {
         color: opts.color ?? pick(opts.colors ?? CONFETTI_COLORS),
         vrot: rand(-6, 6),
         ay: opts.gravity ?? 0,
+        roomId: opts.roomId ?? this.currentRoomId(),
         ...opts.extra,
       });
     }
   }
 
-  confettiBurst(x, y, count = 40) {
+  confettiBurst(x, y, count = 40, roomId = this.currentRoomId()) {
     for (let i = 0; i < count; i++) {
       const a = rand(-Math.PI, 0) * 0.9 - 0.05; // mostly upward
       const sp = rand(150, 420);
@@ -54,11 +65,12 @@ export class Particles {
         size: rand(6, 12),
         color: pick(CONFETTI_COLORS),
         vrot: rand(-9, 9),
+        roomId,
       });
     }
   }
 
-  dustPuff(x, y, count = 8, color = 'rgba(180,160,140,0.5)') {
+  dustPuff(x, y, count = 8, color = 'rgba(180,160,140,0.5)', roomId = this.currentRoomId()) {
     for (let i = 0; i < count; i++) {
       const a = rand(0, TAU);
       this.add({
@@ -69,11 +81,12 @@ export class Particles {
         life: rand(0.4, 0.9),
         size: rand(6, 16),
         color,
+        roomId,
       });
     }
   }
 
-  sparkle(x, y, count = 6) {
+  sparkle(x, y, count = 6, roomId = this.currentRoomId()) {
     for (let i = 0; i < count; i++) {
       this.add({
         x: x + rand(-14, 14), y: y + rand(-14, 14),
@@ -83,11 +96,12 @@ export class Particles {
         size: rand(4, 9),
         color: pick(['#fff6c9', '#ffe066', '#fff', '#ffd6f5']),
         vrot: rand(-3, 3),
+        roomId,
       });
     }
   }
 
-  hearts(x, y, count = 5) {
+  hearts(x, y, count = 5, roomId = this.currentRoomId()) {
     for (let i = 0; i < count; i++) {
       this.add({
         x: x + rand(-20, 20), y: y + rand(-10, 5),
@@ -96,11 +110,12 @@ export class Particles {
         life: rand(0.9, 1.5),
         size: rand(8, 16),
         color: pick(['#ff5d8f', '#ff8fab', '#ff477e']),
+        roomId,
       });
     }
   }
 
-  notes(x, y, count = 3) {
+  notes(x, y, count = 3, roomId = this.currentRoomId()) {
     for (let i = 0; i < count; i++) {
       this.add({
         x: x + rand(-16, 16), y: y + rand(-10, 0),
@@ -109,11 +124,12 @@ export class Particles {
         life: rand(1, 1.6),
         size: rand(14, 20),
         color: pick(['#4cc9f0', '#a685f5', '#ff5d8f', '#3ddad7']),
+        roomId,
       });
     }
   }
 
-  zzz(x, y) {
+  zzz(x, y, roomId = this.currentRoomId()) {
     this.add({
       x: x + rand(-6, 6), y,
       vx: rand(8, 20), vy: rand(-40, -25),
@@ -121,6 +137,7 @@ export class Particles {
       life: 1.6,
       size: rand(11, 16),
       color: '#9db4ff',
+      roomId,
     });
   }
 
@@ -155,7 +172,9 @@ export class Particles {
   }
 
   draw(ctx) {
+    const roomId = this.activeRoomId();
     for (const p of this.items) {
+      if (roomId && p.roomId !== roomId) continue;
       const t = p.age / p.life;
       const fade = t > 0.7 ? 1 - (t - 0.7) / 0.3 : 1;
       ctx.save();

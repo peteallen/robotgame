@@ -1,10 +1,12 @@
 // The living room: layout, furniture footprints (collision), tap zones and
 // procedural fallback rendering until generated art arrives.
 import { TAU, clamp, rectDist, pointInRect, rand } from '../core/math.js';
+import { minimapPlayfieldBounds } from '../ui/minimapLayout.js';
 
 export const WORLD_W = 1680;
 export const WORLD_H = 1050;
 export const WALL_H = 170; // wall band across the top
+const HUD_CONTENT_CLEARANCE = 62;
 
 // Measured from tv.png; the sprite has transparent side padding outside the painted TV.
 const TV_SPRITE_DRAW = { x: -18, y: -16, w: 36, h: 42 };
@@ -13,6 +15,9 @@ const TV_SCREEN_IN_SPRITE = { x: 132 / 640, y: 32 / 287, w: 376 / 640, h: 217 / 
 export class Room {
   constructor(game) {
     this.game = game;
+    this.id = 'living';
+    this.name = 'Living Room';
+    this.type = 'living';
     // Robot-center driving bounds
     this.bounds = { minX: 100, maxX: 1580, minY: 245, maxY: 950 };
     this.rug = { x: 540, y: 400, w: 640, h: 360 };
@@ -43,15 +48,17 @@ export class Room {
       },
       {
         name: 'plant', sprite: 'plant',
-        cx: 1562, cy: 852, w: 220, h: 280,
-        foot: { x: 1490, y: 820, w: 145, h: 105 },
+        // Kept left of the minimap-safe corner and the room-to-room doorway.
+        cx: 1200, cy: 852, w: 220, h: 280,
+        foot: { x: 1128, y: 820, w: 145, h: 105 },
         baseline: 925,
       },
       {
         name: 'toybox', sprite: 'toybox',
-        cx: 1535, cy: 585, w: 230, h: 190,
-        foot: { x: 1440, y: 535, w: 190, h: 115 },
-        baseline: 652,
+        // High on the floor so the right-hand doorway has a generous runway.
+        cx: 1100, cy: 310, w: 230, h: 190,
+        foot: { x: 1005, y: 260, w: 190, h: 115 },
+        baseline: 377,
       },
       {
         name: 'catbed', sprite: 'catbed',
@@ -69,6 +76,24 @@ export class Room {
     ];
     this.couch = this.furniture[0];
     this.table = this.furniture[1];
+    this.portals = [
+      {
+        id: 'living-to-kitchen',
+        targetRoomId: 'kitchen',
+        targetPortalId: 'kitchen-to-living',
+        side: 'right',
+        // `trigger` is intentionally larger than the painted opening so a
+        // toddler does not need to tap the doorway precisely.
+        trigger: { x: 1450, y: 430, w: 230, h: 410 },
+        opening: { x: 1530, y: 485, w: 150, h: 315 },
+        approach: { x: 1425, y: 640 },
+        threshold: { x: 1570, y: 640 },
+        entry: { x: 1510, y: 640 },
+        arrival: { x: 1395, y: 640 },
+        exit: { x: 1720, y: 640 },
+        angle: 0,
+      },
+    ];
     this.plantSway = 0;
   }
 
@@ -82,10 +107,40 @@ export class Room {
   // (e.g. carrying a sock overhead).
   static TABLE_SOLID = { x: 665, y: 450, w: 340, h: 225 };
 
+  getFurniture(name) {
+    return this.furniture.find((item) => item.name === name) || null;
+  }
+
+  portal(idOrTargetRoomId) {
+    if (idOrTargetRoomId == null) return this.portals[0] || null;
+    return this.portals.find((item) =>
+      item.id === idOrTargetRoomId || item.targetRoomId === idOrTargetRoomId
+    ) || null;
+  }
+
+  tapDoorway(x, y) {
+    return this.portals.find((item) => pointInRect(x, y, item.trigger)) || null;
+  }
+
+  hitDoorway(x, y) {
+    return this.tapDoorway(x, y);
+  }
+
+  dockForRoom() {
+    const dock = this.game?.dock;
+    return dock && dock.roomId === this.id ? dock : null;
+  }
+
   // Is this a valid position for a circle of radius r? (furniture + walls)
-  isFree(x, y, r, { ignoreDock = false, ignoreCouch = false, solidTable = false } = {}) {
+  isFree(x, y, r, {
+    ignoreDock = false,
+    ignoreCouch = false,
+    ignoreHud = false,
+    solidTable = false,
+  } = {}) {
     const b = this.bounds;
     if (x < b.minX || x > b.maxX || y < b.minY || y > b.maxY) return false;
+    if (!ignoreHud && !this.isHudFree(x, y, r)) return false;
     for (const f of this.furniture) {
       if (ignoreCouch && f.name === 'couch') continue;
       if (f.foot && rectDist(x, y, f.foot) < r) return false;
@@ -95,8 +150,10 @@ export class Room {
         for (const leg of f.legs) if (rectDist(x, y, leg) < r) return false;
       }
     }
-    if (solidTable && rectDist(x, y, Room.TABLE_SOLID) < r) return false;
-    if (!ignoreDock && this.game.dock && rectDist(x, y, this.game.dock.footprint) < r) return false;
+    const tableSolid = this.tableSolidFootprint ?? Room.TABLE_SOLID;
+    if (solidTable && tableSolid && rectDist(x, y, tableSolid) < r) return false;
+    const dock = this.dockForRoom();
+    if (!ignoreDock && dock && rectDist(x, y, dock.footprint) < r) return false;
     return true;
   }
 
@@ -108,14 +165,24 @@ export class Room {
     if (y < b.minY) return { nx: 0, ny: 1, what: 'wall' };
     if (y > b.maxY) return { nx: 0, ny: -1, what: 'wall' };
     const rects = [];
+    if (!opts.ignoreHud) rects.push({ r: this.hudAvoidanceRect(), what: 'hud' });
     for (const f of this.furniture) {
       if (opts.ignoreCouch && f.name === 'couch') continue;
       if (f.foot) rects.push({ r: f.foot, what: f.name });
       if (f.legs) for (const leg of f.legs) rects.push({ r: leg, what: 'leg', shrink: 1 });
     }
-    if (!opts.ignoreDock && this.game.dock) rects.push({ r: this.game.dock.footprint, what: 'dock' });
+    const dock = this.dockForRoom();
+    if (!opts.ignoreDock && dock) rects.push({ r: dock.footprint, what: 'dock' });
     for (const { r: rect, what, shrink } of rects) {
-      if (rectDist(x, y, rect) < r * (shrink ?? 1)) {
+      const distance = rectDist(x, y, rect);
+      const collisionRadius = r * (shrink ?? 1);
+      // HUD contact is inclusive because isHudFree() also requires strictly
+      // more than the requested radius. Keeping those two answers identical
+      // prevents a tangent robot from being neither free nor collision-owned.
+      const collides = what === 'hud'
+        ? distance <= collisionRadius
+        : distance < collisionRadius;
+      if (collides) {
         const cx = rect.x + rect.w / 2;
         const cy = rect.y + rect.h / 2;
         const dx = x - cx;
@@ -127,13 +194,51 @@ export class Room {
     return null;
   }
 
-  randomFloorPoint(r = 60) {
+  hudAvoidanceRect() {
+    return minimapPlayfieldBounds(this.game);
+  }
+
+  isHudFree(x, y, r = 0) {
+    return rectDist(x, y, this.hudAvoidanceRect()) > Math.max(0, r);
+  }
+
+  nearestFreePoint(x, y, r = 60, opts = {}) {
+    if (this.isFree(x, y, r, opts)) return { x, y };
+    const step = Math.max(28, Math.min(64, r || 28));
+    for (let distance = step; distance <= 320; distance += step) {
+      for (let index = 0; index < 16; index++) {
+        const angle = (index / 16) * TAU;
+        const candidate = {
+          x: x + Math.cos(angle) * distance,
+          y: y + Math.sin(angle) * distance,
+        };
+        if (this.isFree(candidate.x, candidate.y, r, opts)) return candidate;
+      }
+    }
+    return this.randomFloorPoint(r);
+  }
+
+  randomFloorPoint(r = 60, { hudClearance = Math.max(r, HUD_CONTENT_CLEARANCE) } = {}) {
     for (let i = 0; i < 40; i++) {
       const x = rand(this.bounds.minX + 30, this.bounds.maxX - 30);
       const y = rand(this.bounds.minY + 30, this.bounds.maxY - 30);
-      if (this.isFree(x, y, r)) return { x, y };
+      if (this.isFree(x, y, r, { ignoreHud: true }) && this.isHudFree(x, y, hudClearance)) {
+        return { x, y };
+      }
     }
-    return { x: 840, y: 700 };
+    // A deterministic scan makes the fallback room-independent. In
+    // particular, the old living-room fallback sits inside the kitchen island.
+    for (let y = this.bounds.maxY - r; y >= this.bounds.minY + r; y -= Math.max(32, r)) {
+      for (let x = this.bounds.minX + r; x <= this.bounds.maxX - r; x += Math.max(32, r)) {
+        if (this.isFree(x, y, r, { ignoreHud: true }) && this.isHudFree(x, y, hudClearance)) {
+          return { x, y };
+        }
+      }
+    }
+    return {
+      x: (this.bounds.minX + this.bounds.maxX) / 2,
+      y: (this.bounds.minY + this.bounds.maxY) / 2,
+    };
   }
 
   tapFurniture(x, y) {
@@ -167,6 +272,66 @@ export class Room {
     } else {
       this.drawProcWindow(ctx);
     }
+    this.drawDoorways(ctx, assets);
+  }
+
+  drawDoorways(ctx, assets) {
+    for (const portal of this.portals) this.drawDoorway(ctx, assets, portal);
+  }
+
+  drawDoorway(ctx, _assets, portal) {
+    const opening = portal.opening;
+    ctx.save();
+    // A dark opening, honey-wood trim and a small floor runner make the portal
+    // readable even before generated doorway art is installed.
+    const fade = ctx.createLinearGradient(opening.x, 0, opening.x + opening.w, 0);
+    if (portal.side === 'right') {
+      fade.addColorStop(0, 'rgba(72, 54, 62, 0.18)');
+      fade.addColorStop(0.58, '#55404e');
+      fade.addColorStop(1, '#2d2330');
+    } else {
+      fade.addColorStop(0, '#2d2330');
+      fade.addColorStop(0.42, '#55404e');
+      fade.addColorStop(1, 'rgba(72, 54, 62, 0.18)');
+    }
+    ctx.fillStyle = fade;
+    roundRect(ctx, opening.x, opening.y, opening.w, opening.h, 28);
+    ctx.fill();
+
+    ctx.strokeStyle = '#c6925c';
+    ctx.lineWidth = 18;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255, 236, 202, 0.7)';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+
+    const runnerX = portal.side === 'right' ? opening.x - 112 : opening.x + opening.w - 8;
+    const runner = ctx.createLinearGradient(runnerX, 0, runnerX + 120, 0);
+    if (portal.side === 'right') {
+      runner.addColorStop(0, 'rgba(232,101,111,0)');
+      runner.addColorStop(1, 'rgba(232,101,111,0.82)');
+    } else {
+      runner.addColorStop(0, 'rgba(232,101,111,0.82)');
+      runner.addColorStop(1, 'rgba(232,101,111,0)');
+    }
+    ctx.fillStyle = runner;
+    roundRect(ctx, runnerX, portal.approach.y - 54, 120, 108, 28);
+    ctx.fill();
+
+    // Friendly chevrons provide a wordless travel cue.
+    const direction = portal.side === 'right' ? 1 : -1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.82)';
+    ctx.lineWidth = 9;
+    ctx.lineCap = 'round';
+    for (let index = 0; index < 2; index++) {
+      const centerX = portal.approach.x + direction * (28 + index * 34);
+      ctx.beginPath();
+      ctx.moveTo(centerX - direction * 13, portal.approach.y - 17);
+      ctx.lineTo(centerX + direction * 6, portal.approach.y);
+      ctx.lineTo(centerX - direction * 13, portal.approach.y + 17);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   drawProcFloorWall(ctx) {

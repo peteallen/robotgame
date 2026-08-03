@@ -28,7 +28,7 @@ async function boot() {
     game.onPointerUp(e.clientX, e.clientY);
   });
   canvas.addEventListener('pointercancel', () => {
-    game.pointerDown = false;
+    game.onPointerCancel();
   });
   window.addEventListener('contextmenu', (e) => e.preventDefault());
 
