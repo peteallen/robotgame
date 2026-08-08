@@ -51,11 +51,10 @@ export class Minimap {
     if (!this.hitTest(x, y)) return false;
 
     const targetRoomId = this.roomAt(x, y);
-    if (targetRoomId && typeof this.game.requestRoom === 'function') {
-      // The house controller owns all travel and home-return behavior. In
-      // particular, choosing the living room while away requests the route
-      // back to the robot's home room rather than teleporting it.
-      this.game.requestRoom(targetRoomId, 'map');
+    if (targetRoomId && typeof this.game.showRoom === 'function') {
+      // The map controls the visible room only. Robo owns his own route and
+      // crosses the doorway later when cleaning or dock work requires it.
+      this.game.showRoom(targetRoomId, 'map');
     }
     return true;
   }
@@ -74,6 +73,7 @@ export class Minimap {
     const b = MINIMAP_BOUNDS;
     const transition = this.readTransition();
     const activeRoomId = this.activeRoomId();
+    const robotRoomId = this.robotRoomId();
     const destinationRoomId = transition?.toRoomId ?? this.destinationRoomId();
 
     ctx.save();
@@ -99,11 +99,18 @@ export class Minimap {
     this.drawConnector(ctx);
     this.drawRoomTile(ctx, 'living', activeRoomId, destinationRoomId);
     this.drawRoomTile(ctx, 'kitchen', activeRoomId, destinationRoomId);
-    this.drawRobotMarker(ctx, activeRoomId, transition);
+    this.drawRobotMarker(ctx, robotRoomId, transition);
     ctx.restore();
   }
 
   activeRoomId() {
+    return this.game.house?.activeRoomId
+      ?? this.game.room?.id
+      ?? this.game.robot?.roomId
+      ?? 'living';
+  }
+
+  robotRoomId() {
     return this.game.robot?.roomId
       ?? this.game.house?.activeRoomId
       ?? this.game.room?.id
@@ -124,7 +131,7 @@ export class Minimap {
     const raw = house?.transition;
     if (!raw) return null;
 
-    const fromRoomId = raw.fromRoomId ?? raw.fromId ?? raw.from ?? this.activeRoomId();
+    const fromRoomId = raw.fromRoomId ?? raw.fromId ?? raw.from ?? this.robotRoomId();
     const toRoomId = raw.toRoomId ?? raw.toId ?? raw.to ?? this.destinationRoomId();
     if (!ROOM_TILES[fromRoomId] || !ROOM_TILES[toRoomId]) return null;
 

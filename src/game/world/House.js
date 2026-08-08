@@ -153,9 +153,11 @@ export class House {
           ? 'arriving'
           : 'complete';
 
+    // The transition owns only the robot's physical doorway handoff. The
+    // player may be watching either room, so crossing the midpoint must never
+    // replace their selected view.
     if (!transition.switched && transition.progress >= 0.5) {
       transition.switched = true;
-      this.activate(transition.toRoomId);
     }
 
     if (transition.robot) this.applyTransitionPose(transition.robot, transition.progress);
@@ -209,7 +211,6 @@ export class House {
     transition.phase = 'complete';
     transition.switched = true;
     transition.completed = true;
-    this.activate(transition.toRoomId);
     if (transition.robot) this.applyTransitionPose(transition.robot, 1);
     this.lastTransition = transition;
     this.transition = null;
@@ -220,7 +221,6 @@ export class House {
     const transition = this.transition;
     if (!transition) return null;
     if (restoreFromRoom) {
-      this.activate(transition.fromRoomId);
       if (transition.robot) {
         transition.robot.roomId = transition.fromRoomId;
         transition.robot.x = transition.fromPortal.approach.x;
@@ -249,26 +249,19 @@ export class House {
       };
     }
     const p = clamp(progress, 0, 1);
-    const showingDestination = p >= 0.5;
-    const local = showingDestination ? (p - 0.5) * 2 : p * 2;
-    const direction = transition.fromPortal.side === 'right' ? 1 : -1;
-    const roomId = showingDestination ? transition.toRoomId : transition.fromRoomId;
-    const offsetX = showingDestination
-      ? direction * (1 - local) * WORLD_W * 0.035
-      : -direction * local * WORLD_W * 0.035;
+    // Doorway travel is physical simulation, not camera navigation. Keep the
+    // chosen room completely stable while transitionPose() independently
+    // hides and reveals the robot on the appropriate side of the doorway.
     return {
       progress: p,
       phase: transition.phase,
-      roomId,
-      room: this.room(roomId),
-      // A very small pan reinforces direction without introducing a camera
-      // system or moving tap coordinates. The matching cover scale keeps that
-      // pan from exposing the dark canvas along its entering edge.
-      offsetX,
-      sceneScale: 1 + (Math.abs(offsetX) * 2 + 4) / WORLD_W,
-      alpha: showingDestination ? 0.7 + local * 0.3 : 1 - local * 0.3,
-      overlayAlpha: Math.sin(p * Math.PI) * 0.76,
-      direction,
+      roomId: this.activeRoomId,
+      room: this.activeRoom,
+      offsetX: 0,
+      sceneScale: 1,
+      alpha: 1,
+      overlayAlpha: 0,
+      direction: transition.fromPortal.side === 'right' ? 1 : -1,
     };
   }
 
@@ -276,8 +269,9 @@ export class House {
     if (typeof drawRoom !== 'function') return this.transitionFrame();
     const frame = this.transitionFrame();
     ctx.save();
-    // Keep the cover zoom inside the fixed game viewport. Wide phone screens
-    // retain their intentional pillar-box bars while the room itself pans.
+    // Keep the selected scene inside the fixed game viewport. The transform
+    // fields remain part of the frame contract even though physical doorway
+    // travel now leaves the camera stationary.
     ctx.beginPath();
     ctx.rect(0, 0, WORLD_W, WORLD_H);
     ctx.clip();

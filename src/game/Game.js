@@ -20,14 +20,21 @@ import { ActionRegistry } from './actions/ActionRegistry.js';
 import { registerDefaultActions } from './actions/index.js';
 import { createMatJamTriggerState, updateMatJamTrigger } from './actions/matJam.js';
 
+const DEFAULT_SOCKS = Object.freeze(['#ff8fa3', '#8fd7ff']);
+
+function validSockList(value) {
+  return Array.isArray(value) && value.length <= 16 &&
+    value.every((tint) => typeof tint === 'string' && tint.length < 16);
+}
+
 export function cleanVictoryReady(game, robot = game.robot) {
   // The final particle can fill the bin, or finish its suction animation on
-  // the same update that the battery asks to go home. Those two automatic
-  // dock trips must yield to the party, including while they are only just
-  // starting a doorway trip. The final-clean room marker keeps manual travel,
-  // summon docking and older service trips non-interruptible.
+  // the same update that a full bin asks to go home. That automatic bin trip
+  // may yield to the party, including while it is only just starting a doorway
+  // trip. A low-battery return never yields: charging is safety-critical, and
+  // the still-armed roomDirty flag lets the party begin after charging.
   const finalPickupDockTrip = game.finalVacuumRoomId === robot.roomId &&
-    (robot.dockReason === 'bin' || robot.dockReason === 'battery') &&
+    robot.dockReason === 'bin' &&
     (robot.state === 'godock' ||
       (robot.state === 'travel' && robot.roomTravel?.owner === 'state' &&
         robot.roomTravel.reason === 'dock'));
@@ -47,8 +54,7 @@ export class Game {
     this.voice = new Voice(this.sound);
     this.sfx = new Sfx(this.sound);
     // House creates both full-size scenes and keeps `game.room` pointed at the
-    // scene the robot currently occupies. The dock and robot can therefore
-    // safely read room ownership during their own construction.
+    // scene the player is viewing. The robot separately owns its physical room.
     this.house = new House(this);
     this.dock = new Dock(this);
     this.robot = new Robot(this);
@@ -106,6 +112,8 @@ export class Game {
     // socks live in the laundry basket between deliveries — shared across
     // every browser via the dev server's stash (localStorage as fallback)
     this.basketSocks = this.loadSocks();
+    this._sockRevision = 0;
+    this._sockSaveChain = Promise.resolve();
     this.pendingSockDrag = false;
     this.dragSock = null; // {tint, x, y} while a sock rides the finger
     this.syncSocks(true);
@@ -162,13 +170,16 @@ export class Game {
     }
 
     for (const item of this.dirt?.items ?? []) {
-      if (relocate(item, item.roomId, 24) && item.sucking) {
+      const needsPickupAccess = item.vac || item.type === 'sock' ||
+        item.type === 'toy_ball' || item.type === 'toy_block';
+      const clearance = needsPickupAccess ? (robot?.radius ?? 62) + 8 : 24;
+      if (relocate(item, item.roomId, clearance) && item.sucking) {
         item.sucking = false;
         item.suckT = 0;
       }
       if (item.toss) {
         const target = { x: item.toss.toX, y: item.toss.toY };
-        if (relocate(target, item.roomId, 24)) {
+        if (relocate(target, item.roomId, clearance)) {
           item.toss.toX = target.x;
           item.toss.toY = target.y;
         }
@@ -215,6 +226,20 @@ export class Game {
     return true;
   }
 
+  showRoom(roomId, source = 'manual') {
+    if (!this.house.hasRoom(roomId)) return false;
+    if (roomId === this.house.activeRoomId) return true;
+
+    // Room controls own only the camera. Any robot journey already under way
+    // remains untouched, and the normal cleaning watchdog decides when Robo
+    // actually needs to cross the doorway.
+    this.cancelPointerInteraction();
+    this.house.activate(roomId);
+    this._interactionRoomId = roomId;
+    if (source === 'map' || source === 'doorway') this.sound.ackBeep();
+    return true;
+  }
+
   // One cancellation path is used by room requests, automatic/action travel,
   // and the eventual scene switch. A sock already pulled from the basket goes
   // safely back into the shared stash; a lifted rescue robot is set down in
@@ -240,7 +265,11 @@ export class Game {
   syncRoomInteractionState() {
     const roomId = this.house.activeRoomId;
     const traveling = !!this.house.transition || !!this.robot.isRoomTraveling?.();
-    if (roomId !== this._interactionRoomId || (traveling && !this._roomTravelInputLocked)) {
+    // A physical-dock press is already a specific, high-priority command. If
+    // Theo changes the view before lifting their finger, keep that capture
+    // alive so its service and summon still run against the original dock.
+    const pendingDockTap = this.pointerDown && this.pointerCapture?.kind === 'dock';
+    if (!pendingDockTap && roomId !== this._interactionRoomId) {
       this.cancelPointerInteraction();
     }
     this._interactionRoomId = roomId;
@@ -263,6 +292,24 @@ export class Game {
 
   modeHasVac() {
     return this.userMode !== 'mop';
+  }
+
+  canWetClean() {
+    const robot = this.robot;
+    if (!this.modeNeedsPads() || !robot.mopMode) return false;
+
+    // A dock return is a stop command, not another cleaning pass. In
+    // particular, battery cancellation happens before this watchdog runs, so
+    // installed pads must not keep wiping the floor on the first homeward
+    // frame after the active mop action has been released.
+    const batteryCritical = typeof robot.isBatteryCritical === 'function'
+      ? robot.isBatteryCritical()
+      : Number.isFinite(robot.battery) && robot.battery <= 0.16;
+    if (batteryCritical || robot.stayDocked) return false;
+    if (['godock', 'align', 'empty', 'washpads', 'charge', 'docked'].includes(robot.state)) {
+      return false;
+    }
+    return !(robot.state === 'travel' && robot.roomTravel?.reason === 'dock');
   }
 
   requestMode(mode) {
@@ -307,30 +354,52 @@ export class Game {
   loadSocks() {
     try {
       const raw = JSON.parse(localStorage.getItem('robo_socks'));
-      if (Array.isArray(raw) && raw.every((t) => typeof t === 'string')) return raw.slice(0, 8);
+      // Floor and hand-held socks are intentionally session-only. An empty
+      // saved basket therefore means a refresh orphaned those socks, so repair
+      // it with the friendly starter pair instead of preserving emptiness.
+      if (validSockList(raw) && raw.length > 0) return raw.slice(0, 8);
     } catch (e) { /* fresh start */ }
-    return ['#ff8fa3', '#8fd7ff'];
+    return [...DEFAULT_SOCKS];
   }
 
   saveSocks() {
+    this._sockRevision = (this._sockRevision ?? 0) + 1;
+    const snapshot = JSON.stringify(this.basketSocks);
     try {
-      localStorage.setItem('robo_socks', JSON.stringify(this.basketSocks));
+      localStorage.setItem('robo_socks', snapshot);
     } catch (e) { /* private mode etc. — the server stash still works */ }
-    // publish to the shared house-wide stash (dev server); absent on static hosts
-    fetch(`${import.meta.env.BASE_URL}api/socks`, {
+    // Serialize whole-array writes so a rapid pull-and-return cannot let an
+    // older request arrive last and overwrite the newer shared state.
+    const publish = () => fetch(`${import.meta.env.BASE_URL}api/socks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(this.basketSocks),
+      body: snapshot,
     }).catch(() => {});
+    this._sockSaveChain = (this._sockSaveChain ?? Promise.resolve()).then(publish, publish);
+    return this._sockSaveChain;
   }
 
   // adopt the server's shared stash so every browser sees the same basket
   async syncSocks(seedIfEmpty) {
+    const requestRevision = this._sockRevision ?? 0;
     try {
+      // A poll can begin after saveSocks increments the revision but before
+      // its serialized POST reaches the server. Wait for every write that was
+      // already queued when this sync began so the GET cannot read and adopt
+      // the older shared stash. A later local mutation changes the revision
+      // and is still rejected by the checks on either side of the GET.
+      const queuedSaves = this._sockSaveChain ?? Promise.resolve();
+      await queuedSaves;
+      if (requestRevision !== (this._sockRevision ?? 0)) return;
+
       const res = await fetch(`${import.meta.env.BASE_URL}api/socks`, { cache: 'no-store' });
       if (!res.ok) return;
       const socks = await res.json();
-      if (Array.isArray(socks) && socks.length <= 16 && socks.every((t) => typeof t === 'string')) {
+      // A local pull, return, or robot delivery that happened while this GET
+      // was in flight is newer than the response and must win.
+      if (requestRevision !== (this._sockRevision ?? 0)) return;
+
+      if (validSockList(socks) && (!seedIfEmpty || socks.length > 0)) {
         // don't yank a sock out from under an active finger
         if (!this.dragSock && !this.pendingSockDrag) {
           this.basketSocks = socks.slice(0, 8);
@@ -338,8 +407,11 @@ export class Game {
             localStorage.setItem('robo_socks', JSON.stringify(this.basketSocks));
           } catch (e) { /* ok */ }
         }
-      } else if (socks === null && seedIfEmpty) {
-        // first browser to connect seeds the stash
+      } else if (seedIfEmpty) {
+        // A missing, malformed, or empty startup stash cannot describe floor
+        // socks because the floor itself is not persisted. Restore and publish
+        // the starter pair so this browser and the next refresh both recover.
+        if (!this.basketSocks.length) this.basketSocks = [...DEFAULT_SOCKS];
         this.saveSocks();
       }
     } catch (e) { /* no backend (e.g. GitHub Pages) — localStorage only */ }
@@ -423,7 +495,12 @@ export class Game {
   }
 
   celebrate() {
-    this.celebration = { t: 0, next: 0, count: 0 };
+    this.celebration = {
+      t: 0,
+      next: 0,
+      count: 0,
+      roomId: this.robot.roomId,
+    };
     this.sound.fanfare();
   }
 
@@ -454,9 +531,19 @@ export class Game {
       this.pendingSockDrag = false;
       return;
     }
-    if (this.robot.isRoomTraveling?.() || this.house.transition) {
+    const sleepingRobotHit = this.robot.stayDocked &&
+      this.robot.roomId === this.house.activeRoomId &&
+      dist(p.x, p.y, this.robot.x, this.robot.y - this.robot.z) < this.robot.radius + 34;
+    if (!sleepingRobotHit && this.dock &&
+        this.dock.roomId === this.house.activeRoomId &&
+        this.dock.contains?.(p.x, p.y)) {
       this.pointerDown = true;
-      this.pointerCapture = { kind: 'blocked' };
+      this.pointerCapture = {
+        kind: 'dock',
+        roomId: this.dock.roomId,
+        x: p.x,
+        y: p.y,
+      };
       this.downPos = p;
       this.downTime = this.time;
       this.lastCrumb = null;
@@ -468,7 +555,8 @@ export class Game {
     // generous runway, so rescue wins when the two hit areas overlap. The HUD
     // remains first so the minimap and other controls keep their normal input.
     const act = this.actions.current;
-    if (act?.name === 'trapped' && act.grabbable() &&
+    if (this.robot.roomId === this.house.activeRoomId &&
+        act?.name === 'trapped' && act.grabbable() &&
         dist(p.x, p.y, this.robot.x, this.robot.y - this.robot.z) < this.robot.radius + 46) {
       this.robotDrag = { moved: false };
       this.pointerDown = true;
@@ -583,8 +671,11 @@ export class Game {
       this.lastCrumb = null;
       if (!wasDrag && held < holdLimit) {
         if (capture.kind === 'hud') this.hud.onTap(p.x, p.y);
-        else if (capture.kind === 'doorway') this.requestRoom(capture.targetRoomId, 'doorway');
+        else if (capture.kind === 'doorway') this.showRoom(capture.targetRoomId, 'doorway');
         else if (capture.kind === 'milkBottle') this.milkBottle.poke();
+        else if (capture.kind === 'dock') {
+          this.tapDock(capture.x, capture.y, capture.roomId);
+        }
       }
       return;
     }
@@ -759,49 +850,64 @@ export class Game {
     return true;
   }
 
+  tapDock(x, y, roomId = this.house.activeRoomId) {
+    if (!this.dock || this.dock.roomId !== roomId ||
+        !this.dock.contains?.(x, y)) {
+      return false;
+    }
+
+    const zone = this.dock.tapZone(x, y);
+    if (zone && this.dock.service(zone)) {
+      this.say('thank_you', { force: true });
+      this.onDockServiced();
+    } else if (zone) {
+      this.sound.pop();
+      this.particles.sparkle(x, y, 3, this.dock.roomId);
+    }
+
+    // Every part of the physical dock is also an immediate return command.
+    // Action cleanup safely puts down anything in the robotic arm first.
+    this.dock.beacon = 1.2;
+    this.robot.summon();
+    return true;
+  }
+
   tap(x, y) {
     const r = this.robot;
     // 1. HUD buttons
     if (this.hud.onTap(x, y)) return;
-    if (this.house.transition || r.isRoomTraveling?.()) return;
-    // 2. paired doorway — this sits ahead of every room object and floor tap
-    const doorway = this.room.tapDoorway?.(x, y);
-    if (doorway) {
-      this.requestRoom(doorway.targetRoomId, 'doorway');
-      return;
-    }
-    // 3. running action consumes taps (bubble popping!)
-    if (this.actions.onTap(x, y)) return;
-    // 4. the robot!
-    if (r.roomId === this.house.activeRoomId && dist(x, y, r.x, r.y - r.z) < r.radius + 34) {
+    // 2. A robot deliberately sleeping on the dock retains its one-tap wake
+    // control. Other action-specific robot taps get their own first chance
+    // below, before the ordinary surprise-action trigger.
+    if (r.stayDocked && r.roomId === this.house.activeRoomId &&
+        dist(x, y, r.x, r.y - r.z) < r.radius + 34) {
       this.tapRobot();
       return;
     }
-    // 5. the dog
+    // 3. The dock is a high-priority stop-and-return control, even during an
+    // action or doorway crossing.
+    if (this.tapDock(x, y)) return;
+    // 4. paired doorway — this sits ahead of every room object and floor tap
+    const doorway = this.room.tapDoorway?.(x, y);
+    if (doorway) {
+      this.showRoom(doorway.targetRoomId, 'doorway');
+      return;
+    }
+    // 5. A running action consumes its own targets first. This includes taps
+    // on the robot itself, such as helping it out of a kitchen-mat jam.
+    if (r.roomId === this.house.activeRoomId && this.actions.onTap(x, y)) return;
+    // 6. the ordinary robot tap starts a surprise or gives a busy reaction.
+    if (r.roomId === this.house.activeRoomId &&
+        dist(x, y, r.x, r.y - r.z) < r.radius + 34) {
+      this.tapRobot();
+      return;
+    }
+    // 7. the dog
     if (this.dog.roomId === this.house.activeRoomId && this.dog.contains(x, y)) {
       this.dog.onTap();
       return;
     }
-    // 6. the dock — service a tank, or summon the robot home
-    if (this.dock.roomId === this.house.activeRoomId && this.dock.contains(x, y)) {
-      const zone = this.dock.tapZone(x, y);
-      if (zone) {
-        if (this.dock.service(zone)) {
-          this.say('thank_you', { force: true });
-          this.onDockServiced();
-        } else {
-          // nothing to service here — friendly blip
-          this.sound.pop();
-          this.particles.sparkle(x, y, 3, this.dock.roomId);
-        }
-        return;
-      }
-      this.dock.beacon = 1.2;
-      this.sound.ackBeep();
-      this.robot.summon();
-      return;
-    }
-    // 7. toys bounce when tapped
+    // 8. toys bounce when tapped
     const toy = this.dirt.tapToy(x, y);
     if (toy) {
       toy.vx = rand(-220, 220);
@@ -814,7 +920,7 @@ export class Game {
       this.milkBottle.poke();
       return;
     }
-    // 8. furniture & wall objects
+    // 9. furniture & wall objects
     const hit = this.room.tapFurniture(x, y);
     if (this.tapKitchenFurniture(hit)) return;
     if (hit === 'tv') {
@@ -833,11 +939,12 @@ export class Game {
       const center = (this.room.bounds.minX + this.room.bounds.maxX) / 2;
       const inward = plant.cx > center ? -1 : 1;
       const floorY = plant.foot ? plant.foot.y + plant.foot.h : plant.cy + plant.h / 2;
+      const clearance = (r.radius ?? 62) + 8;
       let dropped = 0;
       for (let i = 0; i < 24 && dropped < 2; i++) {
         const lx = plant.cx + inward * rand(plant.w * 0.4, plant.w * 1.05);
         const ly = floorY + rand(-35, 55);
-        if (this.room.isFree(lx, ly, 30)) {
+        if (this.room.isFree(lx, ly, clearance)) {
           this.dirt.spawn('leaf', lx, ly, { drop: rand(120, 200), roomId: this.room.id });
           dropped++;
         }
@@ -857,14 +964,14 @@ export class Game {
       };
       let spot = null;
       for (let i = 0; i < 30; i++) {
-        const p = this.room.randomFloorPoint(45);
+        const p = this.room.randomFloorPoint((r.radius ?? 62) + 8);
         if (dist(p.x, p.y, source.x, source.y) > Math.max(320, toybox.w * 1.4) &&
-            this.room.isFree(p.x, p.y, 45, { solidTable: true })) {
+            this.room.isFree(p.x, p.y, (r.radius ?? 62) + 8, { solidTable: true })) {
           spot = p;
           break;
         }
       }
-      if (!spot) spot = this.room.randomFloorPoint(45);
+      if (!spot) spot = this.room.randomFloorPoint((r.radius ?? 62) + 8);
       const t = this.dirt.spawn(kind, source.x, source.y, { roomId: this.room.id });
       t.scale = 0.25; // grows as it pops out
       this.dirt.toss(t, spot.x, spot.y);
@@ -881,7 +988,14 @@ export class Game {
       if (chance(0.35)) {
         // a shy dust bunny scoots out from under the couch
         const frontY = couch.foot?.y ?? couch.cy - couch.h * 0.3;
-        const d = this.dirt.spawn('dustbunny', couch.cx + rand(-couch.w * 0.27, couch.w * 0.27), frontY - 30, {
+        const rawX = couch.cx + rand(-couch.w * 0.27, couch.w * 0.27);
+        const rawY = frontY - 30;
+        const point = this.room.nearestFreePoint(
+          rawX,
+          rawY,
+          (r.radius ?? 62) + 8,
+        );
+        const d = this.dirt.spawn('dustbunny', point.x, point.y, {
           roomId: this.room.id,
         });
         d.vy = 60;
@@ -903,7 +1017,7 @@ export class Game {
       this.popSockOut();
       return;
     }
-    // 9. tap the floor: sprinkle a mess for Robo to clean!
+    // 10. tap the floor: sprinkle a mess for Robo to clean!
     const b = this.room.bounds;
     if (x > b.minX - 40 && x < b.maxX + 40 && y > b.minY - 30 && y < b.maxY + 40) {
       this.dirt.playerSprinkle(x, y, this.room.id);
@@ -959,7 +1073,10 @@ export class Game {
     this.splash.update(dt);
     if (this.splash.active && !this.splash.fading) return;
     this.room.update(dt);
-    if (this.dock.roomId === this.house.activeRoomId) this.dock.update(dt);
+    // Actor simulation is room-owned, not camera-owned. Switching the view
+    // must not pause a dock service animation or a dog already crossing the
+    // floor in the other room.
+    this.dock.update(dt);
     this.robot.update(dt);
     this.syncRoomInteractionState();
     // The kitchen mat clock observes the robot's resolved movement, then only
@@ -967,7 +1084,7 @@ export class Game {
     this.updateMatJam(dt);
     this.ambience.update(dt);
     this.dirt.update(dt);
-    if (this.dog.roomId === this.house.activeRoomId) this.dog.update(dt);
+    this.dog.update(dt);
     // The bottle and floor field advance before actions inspect wet work. This
     // prevents MopMode from finishing in a transient gap between poured drops.
     this.milkBottle.update(dt);
@@ -993,8 +1110,8 @@ export class Game {
 
     // ---- the wet-mess pipeline --------------------------------------------
     // 1. the robot blunders into a fresh pile (it has no idea — and mop pads
-    // are NO protection: it smears with those on too, it just gets to skip
-    // the pad-install dock trip before cleaning up)
+    // are NO protection: it completes the full initial smear in every mode,
+    // then only an already-equipped mop mode cleans what is left behind)
     const r0 = this.robot;
     if (r0.smearT <= 0 && r0.z <= 0 && Math.abs(r0.speed) > 25) {
       for (const d of this.dirt.items) {
@@ -1002,8 +1119,7 @@ export class Game {
         if (dist(d.x, d.y, r0.x, r0.y) < r0.radius * 0.85) {
           this.dirt.remove(d);
           this.smears.splat(d.x, d.y, { roomId: d.roomId });
-          r0.smearT = 5.2; // blissfully spreading it for a while
-          r0.smearDist = 20;
+          r0.beginWetTracking('poop', d.roomId, { duration: 5.2 });
           r0.fateTarget = null;
           this.sound.splat();
           this.shake(4);
@@ -1012,22 +1128,41 @@ export class Game {
         }
       }
     }
-    // 2. the awful realization → forced mop mode (also mops leftovers).
-    // If the dock can't support mopping, the robot complains ONCE and the
-    // mess waits until a human services the tanks.
+
+    // Vacuum-only wheels pick up existing wet mess on contact and drag it
+    // through the room. A finite burst plus cooldown makes repeated crossings
+    // progressively worse without allowing the new tail to retrigger forever.
+    if (!this.modeNeedsPads() && r0.smearT <= 0 && r0.wetTrackCooldown <= 0 &&
+        r0.z <= 0 && Math.abs(r0.speed) > 25) {
+      const contact = this.smears.wetContactAt(
+        r0.x,
+        r0.y,
+        r0.radius * 0.45,
+        r0.roomId,
+      );
+      if (contact && r0.beginWetTracking(contact.kind, contact.roomId, {
+        fieldId: contact.fieldId ?? null,
+      })) {
+        this.sound.splat();
+        r0.setExpr('dizzy', 1.2);
+      }
+    }
+
+    // 2. Wet work follows the selected mode. Installed pads in mop or
+    // vacuum+mop clean in place; vacuum-only leaves the mess alone and never
+    // turns the incident into an unsolicited equipment trip.
     const directPuddle = this.smears.findPuddle?.();
     const needsWetCleanup = !!directPuddle && r0.smearT <= 0;
     const readyWetWork = this.smears.hasReadyForMop?.() ?? this.smears.count > 0;
-    if (this.pendingMop || needsWetCleanup ||
-        (readyWetWork && !r0.mopMode && r0.smearT <= 0)) {
+    if (r0.smearT <= 0 &&
+        (this.pendingMop || needsWetCleanup || readyWetWork) && this.canWetClean()) {
       if (!this.pendingMopRoomId && (this.pendingMop || directPuddle)) {
         this.pendingMopRoomId = directPuddle?.roomId ?? r0.roomId;
       }
-      const dockStates = ['align', 'empty', 'charge', 'docked'];
-      const allowed = this.dock.canMop() || !this.mopComplained;
+      const dockStates = ['align', 'empty', 'washpads', 'charge', 'docked'];
       // A trapped robot or a dog still making the puddle cannot start cleanup;
       // the persistent floor mark keeps the request alive for a later retry.
-      if (allowed && !this.dog.pooping() && !dockStates.includes(r0.state) &&
+      if (!this.dog.pooping() && !dockStates.includes(r0.state) &&
           this.actions.current?.name !== 'mopMode' &&
           !this.actions.current?.blocksWetCleanup && !r0.isRoomTraveling?.()) {
         if (this.actions.force('mopMode')) {
@@ -1035,14 +1170,11 @@ export class Game {
           this.pendingMop = false;
           this.pendingMopRoomId = null;
         }
-      } else if (!allowed) {
-        this.pendingMop = false;
-        this.pendingMopRoomId = null;
       }
     }
     // ambient mopping: pads wipe whatever they pass over (not while the robot
     // is busy spreading a fresh disaster) + pads get dirty + wet trail
-    if (r0.mopMode) {
+    if (this.canWetClean()) {
       if (Math.abs(r0.speed) > 25) {
         this.mopDirt = clamp(this.mopDirt + dt / 55, 0, 1);
         if (!r0.trailMode) r0.trailMode = 'mop';
@@ -1073,22 +1205,22 @@ export class Game {
     }
 
     // the LAST speck, sock and toy is gone → throw the all-clean victory party!
-    if (cleanVictoryReady(this, r0)) {
+    if (cleanVictoryReady(this, r0) && this.actions.force('winParty')) {
       this.roomDirty = false;
       this.finalVacuumRoomId = null;
-      this.actions.force('winParty');
     }
 
-    // pads dirty → wash trip; player-chosen mode mismatch → equipment trip
-    const idleEnough = !this.actions.busy && ['clean', 'seek'].includes(r0.state) &&
-      !r0.stayDocked && !r0.isRoomTraveling?.() && r0.smearT <= 0 &&
-      this.smears.count === 0 && !this.pendingMop;
-    if (idleEnough) {
-      if (r0.mopMode && this.mopDirt >= 1 && (this.dock.canMop() || !this.mopComplained)) {
-        this.actions.force('washTrip');
-      } else if (r0.mopMode !== this.modeNeedsPads()) {
-        this.actions.force('modeSwitch');
-      }
+    // An explicit player mode change outranks incident handling and may swap
+    // equipment even while wet work exists. Automatic pad washing still waits
+    // until the floor is clean, avoiding a mid-puddle service detour.
+    const serviceReady = !this.actions.busy && ['clean', 'seek'].includes(r0.state) &&
+      !r0.stayDocked && !r0.isRoomTraveling?.() && r0.smearT <= 0;
+    if (serviceReady && r0.mopMode !== this.modeNeedsPads()) {
+      this.actions.force('modeSwitch');
+    } else if (serviceReady && this.smears.count === 0 && !this.pendingMop &&
+        r0.mopMode && this.mopDirt >= 1 &&
+        (this.dock.canMop() || !this.mopComplained)) {
+      this.actions.force('washTrip');
     }
 
     // gentle reminder while anything on the dock needs a human
@@ -1117,7 +1249,8 @@ export class Game {
         const a = angleTo(r0.x, r0.y, pile.x, pile.y);
         const fx = pile.x + Math.cos(a) * 150;
         const fy = pile.y + Math.sin(a) * 150;
-        r0.fateTarget = this.room.isFree(fx, fy, 60)
+        const robotRoom = this.house?.room?.(r0.roomId) ?? this.room;
+        r0.fateTarget = robotRoom.isFree(fx, fy, 60)
           ? { x: fx, y: fy, roomId: pile.roomId, pile }
           : { x: pile.x, y: pile.y, roomId: pile.roomId, pile };
         r0.state = 'clean';
@@ -1156,12 +1289,14 @@ export class Game {
     this.trapT = (this.trapT ?? rand(50, 90)) - dt;
     if (this.trapT <= 0) {
       this.trapT = rand(130, 220);
+      const robotRoom = this.house?.room?.(r0.roomId) ?? this.room;
       if (!this.actions.busy && r0.state === 'clean' && !r0.stayDocked &&
           !r0.isRoomTraveling?.() && !this.messActive() && !this.dock.anyAlert() &&
           this.dog.state !== 'ride' &&
           r0.battery > 0.3 && r0.bin < 0.9 &&
           r0.mopMode === this.modeNeedsPads() && !(r0.mopMode && this.mopDirt >= 1) &&
-          (this.roomFurniture('couch') || this.roomFurniture('table'))) {
+          (this.roomFurniture('couch', robotRoom) ||
+            this.roomFurniture('table', robotRoom))) {
         this.actions.force('trapped');
       }
     }
@@ -1208,9 +1343,9 @@ export class Game {
         this.sound.fireworkBurst();
         this.particles.burst(x, y, 'star', 24, {
           speedMin: 100, speedMax: 340, lifeMin: 0.6, lifeMax: 1.4,
-          gravity: 150, roomId: r0.roomId,
+          gravity: 150, roomId: c.roomId,
         });
-        this.particles.confettiBurst(x, y, 20, r0.roomId);
+        this.particles.confettiBurst(x, y, 20, c.roomId);
       }
       if (c.t > 3.2) this.celebration = null;
     }
@@ -1232,8 +1367,8 @@ export class Game {
       (this.offY + shakeY) * this.dpr
     );
 
-    // House chooses exactly one full-size scene. During a doorway crossing it
-    // also supplies the small directional pan and paints the transition wash.
+    // House draws exactly the room Theo selected. Doorway crossing changes the
+    // robot's physical pose without taking control of this camera choice.
     this.house.drawTransition(ctx, (room, roomCtx) => this.drawRoomScene(roomCtx, room));
 
     // cozy vignette

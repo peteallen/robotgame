@@ -71,20 +71,21 @@ test('new debris clears a pending final-vacuum marker', () => {
   assert.equal(game.finalVacuumRoomId, null);
 });
 
-test('a final kitchen pickup lets a new bin or battery dock trip yield to victory', () => {
-  for (const dockReason of ['bin', 'battery']) {
-    const { game, robot } = victoryScenario({
-      robot: { state: 'godock', dockReason },
-      game: { finalVacuumRoomId: 'kitchen' },
-    });
-    assert.equal(cleanVictoryReady(game, robot), true);
-  }
+test('a final kitchen pickup may preempt a bin trip but never a battery trip', () => {
+  const { game, robot } = victoryScenario({
+    robot: { state: 'godock', dockReason: 'bin' },
+    game: { finalVacuumRoomId: 'kitchen' },
+  });
+  assert.equal(cleanVictoryReady(game, robot), true);
+
+  robot.dockReason = 'battery';
+  assert.equal(cleanVictoryReady(game, robot), false);
 });
 
 test('a final pickup can preempt only the automatic dock-owned doorway trip', () => {
   const dockTravel = {
     state: 'travel',
-    dockReason: 'battery',
+    dockReason: 'bin',
     roomTravel: { owner: 'state', reason: 'dock', targetRoomId: 'living' },
   };
   const { game, robot } = victoryScenario({
@@ -92,6 +93,10 @@ test('a final pickup can preempt only the automatic dock-owned doorway trip', ()
     game: { finalVacuumRoomId: 'kitchen' },
   });
   assert.equal(cleanVictoryReady(game, robot), true);
+
+  robot.dockReason = 'battery';
+  assert.equal(cleanVictoryReady(game, robot), false, 'charging outranks the party');
+  robot.dockReason = 'bin';
 
   robot.roomTravel = { owner: 'state', reason: 'manual', targetRoomId: 'living' };
   assert.equal(cleanVictoryReady(game, robot), false);
@@ -102,7 +107,7 @@ test('a final pickup can preempt only the automatic dock-owned doorway trip', ()
 
 test('the dock exception is tied to the final pickup room and does not interrupt other work', () => {
   const { game, robot } = victoryScenario({
-    robot: { state: 'godock', dockReason: 'battery' },
+    robot: { state: 'godock', dockReason: 'bin' },
     game: { finalVacuumRoomId: 'kitchen' },
   });
 
@@ -113,7 +118,7 @@ test('the dock exception is tied to the final pickup room and does not interrupt
   robot.dockReason = 'summon';
   assert.equal(cleanVictoryReady(game, robot), false, 'a player summon remains authoritative');
 
-  robot.dockReason = 'battery';
+  robot.dockReason = 'bin';
   game.actions.busy = true;
   assert.equal(cleanVictoryReady(game, robot), false, 'a running action is not interrupted');
 

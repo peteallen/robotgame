@@ -5,6 +5,9 @@ import { TAU, clamp, lerp, rand, pick, chance, dist, angleTo, angleDiff, angleAp
 import { Room, roundRect } from '../world/Room.js';
 
 const R = 62; // robot radius in world units (sized so the on-body battery reads)
+const SEEK_GRID_SPACING = 56;
+const SEEK_CONNECTOR_RADIUS = SEEK_GRID_SPACING * 2.6;
+const SEEK_MAX_REPLANS = 3;
 
 export class Robot {
   constructor(game) {
@@ -39,6 +42,10 @@ export class Robot {
     this.seekPathIndex = 0;
     this.seekWaypointBest = Infinity;
     this.seekWaypointStallT = 0;
+    this.seekPathPlanX = null;
+    this.seekPathPlanY = null;
+    this.seekPathReplans = 0;
+    this.seekNavigationGraphs = new WeakMap();
     this.seekCheckT = 1;
     this.chirpT = rand(5, 10);
     this.stuckT = 0;
@@ -54,10 +61,15 @@ export class Robot {
     this.backupBeepT = 0;
     this.seekT = 0;
 
-    // the poopocalypse
-    this.smearT = 0; // seconds of oblivious mess-spreading left
+    // Wet wheels: fresh poop always starts a tracking burst; in vacuum-only
+    // mode, crossing milk, vomit or old tracks can start another one.
+    this.smearT = 0;
     this.smearDist = 0;
     this.smearRoomId = null;
+    this.smearKind = null;
+    this.smearFieldId = null;
+    this.smearTrackPoints = null;
+    this.wetTrackCooldown = 0;
     this.mopMode = false;
     this.fateTarget = null; // disguised waypoint that leads through... something
 
@@ -106,6 +118,32 @@ export class Robot {
     };
   }
 
+  wheelTrackPoints() {
+    const px = Math.cos(this.heading + Math.PI / 2);
+    const py = Math.sin(this.heading + Math.PI / 2);
+    return [-1, 1].map((side) => ({
+      x: this.x + px * 33 * side,
+      y: this.y + py * 33 * side,
+    }));
+  }
+
+  beginWetTracking(kind, roomId = this.roomId, {
+    duration = 4.4,
+    fieldId = null,
+  } = {}) {
+    if (!kind || this.smearT > 0) return false;
+    this.smearT = duration;
+    this.smearDist = 20;
+    this.smearRoomId = roomId;
+    this.smearKind = kind;
+    this.smearFieldId = fieldId;
+    this.smearTrackPoints = fieldId
+      ? [{ x: this.x, y: this.y }, { x: this.x, y: this.y }]
+      : this.wheelTrackPoints();
+    this.wetTrackCooldown = 0;
+    return true;
+  }
+
   setExpr(expr, dur = 1.2) {
     this.face = { expr, until: this.game.time + dur };
   }
@@ -134,7 +172,11 @@ export class Robot {
       this.game.dock.anyAlert();
   }
 
-  release() {
+  isBatteryCritical() {
+    return this.battery <= 0.16;
+  }
+
+  release(preferredDockReason = null) {
     this.controlled = false;
     this.trailMode = null;
     if (this.dockAfterAction) {
@@ -143,9 +185,11 @@ export class Robot {
       this.dockAfterAction = false;
       this.stayDocked = true;
     }
-    if (this.stayDocked) {
+    if (preferredDockReason) {
+      this.goDock(preferredDockReason);
+    } else if (this.stayDocked) {
       this.goDock('summon');
-    } else if (this.bin >= 1 || this.battery <= 0.16) {
+    } else if (this.bin >= 1 || this.isBatteryCritical()) {
       this.goDock(this.bin >= 1 ? 'bin' : 'battery');
     } else {
       this.state = 'clean';
@@ -153,6 +197,28 @@ export class Robot {
       this.modeTimer = rand(6, 10);
       this.targetSpeed = 130;
     }
+  }
+
+  dockApproachPose() {
+    const dock = this.game.dock;
+    const dockRoomId = dock.roomId ?? 'living';
+    if (this.roomId !== dockRoomId) return null;
+
+    const lateral = Math.abs(this.x - dock.x);
+    const parkedDistance = Math.abs(this.y - dock.parkY);
+    if (lateral <= 18 && parkedDistance <= 18) return 'parked';
+
+    // Equipment trips use the same final backing lane as ordinary docking.
+    // If one is interrupted after turning around, preserve that progress so
+    // the normal align state can finish backing in instead of driving out to
+    // the approach point and repeating the whole maneuver.
+    const approachY = dock.approach?.y ?? dock.parkY + 180;
+    const facingOut = Math.abs(angleDiff(this.heading, Math.PI / 2)) <= 0.18;
+    if (facingOut && lateral <= 36 &&
+        this.y >= dock.parkY - 18 && this.y <= approachY + 30) {
+      return 'aligned';
+    }
+    return null;
   }
 
   // Steer toward a point with obstacle avoidance. Returns true when arrived.
@@ -233,7 +299,8 @@ export class Robot {
     if (this.controlled) return false;
     if (this.roomTravel) return this.roomTravel.targetRoomId === roomId;
     if (this.smearT > 0 && reason !== 'dock') return false;
-    if (this.game.dog?.roomId === this.roomId && this.game.dog.pooping?.()) {
+    if (reason !== 'dock' && this.game.dog?.roomId === this.roomId &&
+        this.game.dog.pooping?.()) {
       return false;
     }
 
@@ -286,7 +353,8 @@ export class Robot {
     const house = this.game.house;
     if (!house?.room?.(targetRoomId) || house.transition || this.roomTravel ||
         targetRoomId === this.roomId) return false;
-    if (this.game.dog?.roomId === this.roomId && this.game.dog.pooping?.()) return false;
+    if (reason !== 'dock' && this.game.dog?.roomId === this.roomId &&
+        this.game.dog.pooping?.()) return false;
     const portal = house.portal?.(this.roomId, targetRoomId) ?? this.roomFor()?.portal?.(targetRoomId);
     if (!portal) return false;
 
@@ -346,12 +414,15 @@ export class Robot {
     const room = this.roomFor();
     const start = { x: this.x, y: this.y };
     const goal = { x: tx, y: ty };
+    const routeClearance = Number.isFinite(opts.clearance)
+      ? Math.max(R, opts.clearance)
+      : R + 8;
+    const directClearance = Math.min(routeClearance, R + 2);
     // A physically clear direct line is safe even when it passes through a
     // deliberately snug authored corridor. Detours use a larger margin.
-    if (this.travelSegmentFree(room, start, goal, opts, R + 2)) return [goal];
+    if (this.travelSegmentFree(room, start, goal, opts, directClearance)) return [goal];
 
     const spacing = 56;
-    const clearance = R + 8;
     const nodes = new Map();
     const bounds = room.bounds;
     const xValues = axisValues(bounds.minX, bounds.maxX, spacing, [start.x, goal.x]);
@@ -360,7 +431,7 @@ export class Robot {
       const y = yValues[row];
       for (let col = 0; col < xValues.length; col++) {
         const x = xValues[col];
-        if (!room.isFree(x, y, clearance, opts)) continue;
+        if (!room.isFree(x, y, routeClearance, opts)) continue;
         const key = `${col},${row}`;
         nodes.set(key, { key, col, row, x, y });
       }
@@ -369,7 +440,7 @@ export class Robot {
     const connectorRadius = spacing * 2.6;
     let starts = [...nodes.values()].filter((node) =>
       dist(start.x, start.y, node.x, node.y) <= connectorRadius &&
-      this.travelSegmentFree(room, start, node, opts)
+      this.travelSegmentFree(room, start, node, opts, routeClearance)
     );
     // Authored edge pockets can fall between grid rows. If that happens, use
     // any physically visible node rather than falling back to the looping
@@ -398,7 +469,7 @@ export class Robot {
       open.sort((a, b) => a.score - b.score);
       const current = open.shift();
       if (current.cost !== costs.get(current.node.key)) continue;
-      if (this.travelSegmentFree(room, current.node, goal, opts)) {
+      if (this.travelSegmentFree(room, current.node, goal, opts, routeClearance)) {
         reached = current.node;
         break;
       }
@@ -407,7 +478,8 @@ export class Robot {
         for (let dx = -1; dx <= 1; dx++) {
           if (dx === 0 && dy === 0) continue;
           const next = nodes.get(`${current.node.col + dx},${current.node.row + dy}`);
-          if (!next || !this.travelSegmentFree(room, current.node, next, opts)) continue;
+          if (!next ||
+              !this.travelSegmentFree(room, current.node, next, opts, routeClearance)) continue;
           const nextCost = current.cost + dist(current.node.x, current.node.y, next.x, next.y);
           if (nextCost >= (costs.get(next.key) ?? Infinity)) continue;
           costs.set(next.key, nextCost);
@@ -433,7 +505,13 @@ export class Robot {
     while (fromIndex < raw.length - 1) {
       let nextIndex = raw.length - 1;
       while (nextIndex > fromIndex + 1 &&
-          !this.travelSegmentFree(room, raw[fromIndex], raw[nextIndex], opts)) {
+          !this.travelSegmentFree(
+            room,
+            raw[fromIndex],
+            raw[nextIndex],
+            opts,
+            routeClearance,
+          )) {
         nextIndex--;
       }
       simplified.push(raw[nextIndex]);
@@ -448,18 +526,29 @@ export class Robot {
     this.seekPathIndex = 0;
     this.seekWaypointBest = Infinity;
     this.seekWaypointStallT = 0;
+    this.seekPathPlanX = null;
+    this.seekPathPlanY = null;
+    this.seekPathReplans = 0;
   }
 
-  planSeekPath(target) {
-    const room = this.roomFor();
-    if (!target || !room) return null;
+  seekApproachRadius(target) {
+    return target?.puddle ? 48 : 88;
+  }
+
+  seekApproaches(target, room = this.roomFor()) {
+    if (!target || !room) return [];
     const candidates = [{ x: target.x, y: target.y }];
     const towardRobot = angleTo(target.x, target.y, this.x, this.y);
-    // Floor specks are intentionally allowed closer to furniture than the
-    // robot's body. The suction mouth reaches well beyond the chassis, so plan
-    // to a free point around the speck and let the final short approach pull it
-    // in without trying to park the robot on top of it.
-    for (const radius of [72, 88]) {
+    const centerHasRobotClearance = room.isFree(target.x, target.y, R + 8);
+    // New debris is spawned with full robot clearance. The denser inner rings
+    // are a defensive recovery path for an item already nudged beside old
+    // furniture or moved there by a responsive-layout change.
+    const radii = target.puddle
+      ? [48]
+      : centerHasRobotClearance
+        ? [72, 88]
+        : [8, 24, 40, 56, 72, 88];
+    for (const radius of radii) {
       for (let index = 0; index < 16; index++) {
         const angle = towardRobot + index * Math.PI / 8;
         candidates.push({
@@ -468,28 +557,337 @@ export class Robot {
         });
       }
     }
+    return candidates
+      .filter((candidate) => room.isFree(candidate.x, candidate.y, R + 8))
+      .map((candidate) => ({
+        ...candidate,
+        lowerBound: dist(this.x, this.y, candidate.x, candidate.y),
+      }))
+      .sort((a, b) => a.lowerBound - b.lowerBound);
+  }
 
-    let best = null;
-    for (const candidate of candidates) {
-      if (!room.isFree(candidate.x, candidate.y, R + 8)) continue;
-      const path = this.planRoomTravelPath(candidate.x, candidate.y);
-      if (!path?.length) continue;
-      let length = 0;
-      let previous = this;
-      for (const point of path) {
-        length += dist(previous.x, previous.y, point.x, point.y);
-        previous = point;
+  seekGraphSignature(room) {
+    const bounds = room.bounds;
+    const hud = room.hudAvoidanceRect?.() ?? {};
+    const dock = room.dockForRoom?.()?.footprint ?? {};
+    return [
+      bounds.minX, bounds.maxX, bounds.minY, bounds.maxY,
+      hud.x, hud.y, hud.w, hud.h,
+      dock.x, dock.y, dock.w, dock.h,
+    ].join(':');
+  }
+
+  seekNavigationGraph(room) {
+    const signature = this.seekGraphSignature(room);
+    const cached = this.seekNavigationGraphs.get(room);
+    if (cached?.signature === signature) return cached;
+
+    const nodesByKey = new Map();
+    const nodes = [];
+    const bounds = room.bounds;
+    const xValues = axisValues(bounds.minX, bounds.maxX, SEEK_GRID_SPACING);
+    const yValues = axisValues(bounds.minY, bounds.maxY, SEEK_GRID_SPACING);
+    for (let row = 0; row < yValues.length; row++) {
+      for (let col = 0; col < xValues.length; col++) {
+        const x = xValues[col];
+        const y = yValues[row];
+        if (!room.isFree(x, y, R + 8)) continue;
+        const node = {
+          index: nodes.length,
+          key: `${col},${row}`,
+          col,
+          row,
+          x,
+          y,
+        };
+        nodes.push(node);
+        nodesByKey.set(node.key, node);
       }
-      if (!best || length < best.length) best = { path, length };
     }
-    return best?.path ?? null;
+
+    const edges = nodes.map(() => []);
+    const forwardNeighbors = [[1, 0], [0, 1], [1, 1], [-1, 1]];
+    for (const node of nodes) {
+      for (const [dx, dy] of forwardNeighbors) {
+        const neighbor = nodesByKey.get(`${node.col + dx},${node.row + dy}`);
+        if (!neighbor || !this.travelSegmentFree(room, node, neighbor)) continue;
+        const length = dist(node.x, node.y, neighbor.x, neighbor.y);
+        edges[node.index].push({ index: neighbor.index, length });
+        edges[neighbor.index].push({ index: node.index, length });
+      }
+    }
+
+    const graph = { signature, nodes, edges, xValues, yValues };
+    this.seekNavigationGraphs.set(room, graph);
+    return graph;
+  }
+
+  buildSeekRouteSearch(room) {
+    const graph = this.seekNavigationGraph(room);
+    const start = { x: this.x, y: this.y };
+    let starts = graph.nodes.filter((node) =>
+      dist(start.x, start.y, node.x, node.y) <= SEEK_CONNECTOR_RADIUS &&
+      this.travelSegmentFree(room, start, node)
+    );
+    // The robot can occasionally begin in an authored snug pocket between
+    // grid rows. Connect it to any visible node at its physical radius rather
+    // than abandoning otherwise reachable dirt.
+    if (!starts.length) {
+      starts = graph.nodes.filter((node) =>
+        this.travelSegmentFree(room, start, node, {}, R)
+      );
+    }
+
+    const costs = new Float64Array(graph.nodes.length);
+    costs.fill(Infinity);
+    const parents = new Int32Array(graph.nodes.length);
+    parents.fill(-1);
+    const settled = [];
+    const heap = [];
+    for (const node of starts) {
+      const cost = dist(start.x, start.y, node.x, node.y);
+      if (cost >= costs[node.index]) continue;
+      costs[node.index] = cost;
+      minHeapPush(heap, { index: node.index, cost });
+    }
+
+    while (heap.length) {
+      const current = minHeapPop(heap);
+      if (current.cost !== costs[current.index]) continue;
+      settled.push(current.index);
+      for (const edge of graph.edges[current.index]) {
+        const nextCost = current.cost + edge.length;
+        if (nextCost >= costs[edge.index]) continue;
+        costs[edge.index] = nextCost;
+        parents[edge.index] = current.index;
+        minHeapPush(heap, { index: edge.index, cost: nextCost });
+      }
+    }
+    return { graph, start, costs, parents, settled };
+  }
+
+  simplifySeekRoute(room, points) {
+    const start = { x: this.x, y: this.y };
+    const raw = [start, ...points];
+    const path = [];
+    let fromIndex = 0;
+    while (fromIndex < raw.length - 1) {
+      let nextIndex = raw.length - 1;
+      while (nextIndex > fromIndex + 1 &&
+          !this.travelSegmentFree(room, raw[fromIndex], raw[nextIndex])) {
+        nextIndex--;
+      }
+      path.push({ x: raw[nextIndex].x, y: raw[nextIndex].y });
+      fromIndex = nextIndex;
+    }
+    let length = 0;
+    let previous = start;
+    for (const point of path) {
+      length += dist(previous.x, previous.y, point.x, point.y);
+      previous = point;
+    }
+    return { path, length };
+  }
+
+  routeFromSeekSearch(search, connectorIndex, approach, room) {
+    const gridPath = [];
+    for (let index = connectorIndex; index >= 0; index = search.parents[index]) {
+      const node = search.graph.nodes[index];
+      gridPath.push({ x: node.x, y: node.y });
+    }
+    gridPath.reverse();
+    gridPath.push({ x: approach.x, y: approach.y });
+    return this.simplifySeekRoute(room, gridPath);
+  }
+
+  // The cached graph deliberately uses fixed axes. When those axes imply a
+  // large detour, run the compact dynamic planner for that approach; it adds
+  // both the robot's and goal's rows and columns, preserving narrow lanes.
+  routeThroughSeekOverlay(search, approach, room) {
+    const path = this.planRoomTravelPath(approach.x, approach.y);
+    if (!path?.length) return null;
+    let length = 0;
+    let previous = search.start;
+    for (const point of path) {
+      length += dist(previous.x, previous.y, point.x, point.y);
+      previous = point;
+    }
+    return { path, length };
+  }
+
+  planBestSeekRoute(targets) {
+    const room = this.roomFor();
+    if (!room || !targets?.length) return null;
+    const targetPlans = targets
+      .map((target) => ({ target, approaches: this.seekApproaches(target, room) }))
+      .filter((plan) => plan.approaches.length);
+    if (!targetPlans.length) return null;
+
+    const start = { x: this.x, y: this.y };
+    let best = null;
+    const isBetter = (target, length) =>
+      !best || length < best.length - 0.001 ||
+      (Math.abs(length - best.length) <= 0.001 &&
+        (target.id ?? 0) < (best.target.id ?? 0));
+    const consider = (target, route) => {
+      if (route && isBetter(target, route.length)) {
+        best = { target, path: route.path, length: route.length };
+      }
+    };
+
+    // Most dirt has an unobstructed straight approach. Resolve those cheaply
+    // first; their exact lengths also prune detours that cannot possibly win.
+    for (const plan of targetPlans) {
+      plan.directIndex = -1;
+      for (let index = 0; index < plan.approaches.length; index++) {
+        const approach = plan.approaches[index];
+        if (best && approach.lowerBound > best.length + 0.001) break;
+        if (this.travelSegmentFree(room, start, approach, {}, R + 2)) {
+          consider(plan.target, {
+            path: [{ x: approach.x, y: approach.y }],
+            length: approach.lowerBound,
+          });
+          plan.directIndex = index;
+          break;
+        }
+      }
+    }
+
+    const needsGrid = targetPlans.some((plan) =>
+      plan.approaches.some((approach) => !best || approach.lowerBound < best.length - 0.001)
+    );
+    let search = null;
+    if (needsGrid) {
+      search = this.buildSeekRouteSearch(room);
+      for (const plan of targetPlans) {
+        const approachLimit = plan.directIndex >= 0
+          ? plan.directIndex
+          : plan.approaches.length;
+        for (let approachIndex = 0; approachIndex < approachLimit; approachIndex++) {
+          const approach = plan.approaches[approachIndex];
+          if (best && approach.lowerBound > best.length + 0.001) break;
+          const connectors = [];
+          for (const nodeIndex of search.settled) {
+            const node = search.graph.nodes[nodeIndex];
+            const connectorLength = dist(node.x, node.y, approach.x, approach.y);
+            if (connectorLength > SEEK_CONNECTOR_RADIUS * 1.7) continue;
+            if (!this.travelSegmentFree(room, node, approach)) continue;
+            const length = search.costs[nodeIndex] + connectorLength;
+            connectors.push({ nodeIndex, length });
+          }
+          connectors.sort((a, b) => a.length - b.length);
+          let route = null;
+          let dynamicCompared = false;
+          const gridClearlyDetours = !connectors.length ||
+            connectors[0].length > approach.lowerBound + SEEK_GRID_SPACING;
+          if (gridClearlyDetours) {
+            route = this.routeThroughSeekOverlay(search, approach, room);
+            dynamicCompared = true;
+          } else {
+            // Simplification can change the order of near-equal grid routes,
+            // so compare every connector within one grid step of the best
+            // viable cost. The bounded window avoids scoring dozens of
+            // obviously inferior entries around the same open floor region.
+            const competitiveLimit = connectors[0].length + SEEK_GRID_SPACING;
+            for (const connector of connectors) {
+              if (connector.length > competitiveLimit) break;
+              const candidateRoute = this.routeFromSeekSearch(
+                search,
+                connector.nodeIndex,
+                approach,
+                room,
+              );
+              if (!route || candidateRoute.length < route.length) route = candidateRoute;
+            }
+          }
+          if (!dynamicCompared &&
+              (!route || route.length > approach.lowerBound + SEEK_GRID_SPACING)) {
+            const overlayRoute = this.routeThroughSeekOverlay(search, approach, room);
+            if (overlayRoute && (!route || overlayRoute.length < route.length)) {
+              route = overlayRoute;
+            }
+          }
+          consider(plan.target, route);
+        }
+      }
+    }
+    return best;
+  }
+
+  planSeekRoute(target) {
+    const choice = this.planBestSeekRoute(target ? [target] : []);
+    return choice ? { path: choice.path, length: choice.length } : null;
+  }
+
+  planSeekPath(target) {
+    return this.planSeekRoute(target)?.path ?? null;
+  }
+
+  vacuumTargetAvailable(target) {
+    if (!target || !this.game.dirt.items.includes(target)) return false;
+    if (target.roomId !== this.roomId || !target.vac || target.sucking || target.drop > 0 || target.toss) {
+      return false;
+    }
+    return !target.shunned || target.shunned <= this.game.time;
+  }
+
+  hasLandingVacuumTarget() {
+    if (!this.game.modeHasVac()) return false;
+    return this.game.dirt.items.some((target) =>
+      target.roomId === this.roomId && target.vac && !target.sucking &&
+      (target.drop > 0 || target.toss) &&
+      (!target.shunned || target.shunned <= this.game.time)
+    );
+  }
+
+  chooseVacuumTarget() {
+    if (!this.game.modeHasVac()) return null;
+    const candidates = this.game.dirt.items
+      .filter((target) => this.vacuumTargetAvailable(target))
+      .sort((a, b) =>
+        dist(this.x, this.y, a.x, a.y) - dist(this.x, this.y, b.x, b.y) ||
+        (a.id ?? 0) - (b.id ?? 0));
+    return this.planBestSeekRoute(candidates);
+  }
+
+  commitVacuumTarget(choice) {
+    if (!choice?.target) return false;
+    this.clearSeekPath();
+    this.seekDirt = choice.target;
+    this.seekPathTarget = choice.target;
+    this.seekPath = choice.path;
+    this.seekPathPlanX = choice.target.x;
+    this.seekPathPlanY = choice.target.y;
+    this.seekPathReplans = 0;
+    this.seekT = 0;
+    return true;
+  }
+
+  abandonVacuumTarget(target) {
+    if (target && this.game.dirt.items.includes(target)) {
+      target.shunned = this.game.time + 30;
+    }
+    if (this.seekDirt === target) this.seekDirt = null;
+    this.clearSeekPath();
+    this.seekT = 0;
+    this.state = 'clean';
+    this.cleanMode = 'wander';
+    this.modeTimer = rand(4, 7);
+    this.seekCheckT = Math.min(this.seekCheckT, 0.2);
+    this.game.sound.questionBeep();
+    this.setExpr('dizzy', 1.2);
   }
 
   followSeekPath(target, dt) {
-    if (this.seekPathTarget !== target) {
+    const moved = this.seekPathTarget === target && this.seekPathPlanX != null &&
+      dist(target.x, target.y, this.seekPathPlanX, this.seekPathPlanY) > 24;
+    if (this.seekPathTarget !== target || moved) {
       this.clearSeekPath();
       this.seekPathTarget = target;
-      this.seekPath = this.planSeekPath(target);
+      const route = this.planSeekRoute(target);
+      this.seekPath = route?.path ?? null;
+      this.seekPathPlanX = target.x;
+      this.seekPathPlanY = target.y;
     }
     if (!this.seekPath || this.seekPathIndex >= this.seekPath.length) return false;
 
@@ -502,10 +900,22 @@ export class Robot {
       this.seekWaypointStallT += dt;
     }
     if (this.seekWaypointStallT > 2.2) {
-      this.seekPath = this.planSeekPath(target);
+      this.seekPathReplans++;
+      if (this.seekPathReplans >= SEEK_MAX_REPLANS) {
+        this.abandonVacuumTarget(target);
+        return true;
+      }
+      const route = this.planSeekRoute(target);
+      if (!route) {
+        this.abandonVacuumTarget(target);
+        return true;
+      }
+      this.seekPath = route?.path ?? null;
       this.seekPathIndex = 0;
       this.seekWaypointBest = Infinity;
       this.seekWaypointStallT = 0;
+      this.seekPathPlanX = target.x;
+      this.seekPathPlanY = target.y;
       this.escape = null;
       return !!this.seekPath;
     }
@@ -548,19 +958,16 @@ export class Robot {
     for (const obstacle of obstacles) {
       if (segmentRectDistanceSquared(from, to, obstacle) < clearanceSq) return false;
     }
-
-    const length = dist(from.x, from.y, to.x, to.y);
-    // Keep the validation stride below the robot's normal per-frame movement.
-    // A coarse sample can hop over the very short collision interval created
-    // by a line grazing an inflated furniture corner, even though movement
-    // physics catches that interval and leaves the robot pinned there.
-    const steps = Math.max(1, Math.ceil(length / 4));
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      if (!room.isFree(lerp(from.x, to.x, t), lerp(from.y, to.y, t), clearance, opts)) {
-        return false;
-      }
+    if (!opts.ignoreHud) {
+      const hud = room.hudAvoidanceRect?.();
+      // HUD clearance is inclusive in Room.isHudFree(), unlike furniture's
+      // strict radius comparison.
+      if (hud && segmentRectDistanceSquared(from, to, hud) <= clearanceSq) return false;
     }
+    // Room.isFree() is composed entirely of the center bounds and the
+    // axis-aligned rectangles checked above. The bounds are convex, so free
+    // endpoints plus these exact segment-distance checks cover the whole line
+    // without an expensive four-pixel sampling loop.
     return true;
   }
 
@@ -799,6 +1206,140 @@ export class Robot {
     this.fateTarget = null;
   }
 
+  clearFatePath(target = this.fateTarget) {
+    if (!target) return;
+    target.path = null;
+    target.pathIndex = 0;
+    target.waypointBest = Infinity;
+    target.waypointStallT = 0;
+  }
+
+  planFatePath(target = this.fateTarget) {
+    const pile = this.bindFatePile(target);
+    if (!target || !pile) return false;
+
+    let path = target.finalApproach
+      ? this.planFateContactPath(target, pile)
+      : this.planRoomTravelPath(target.x, target.y);
+    // The first target normally sits just beyond the pile so the encounter
+    // looks accidental. If furniture makes that authored point unreachable,
+    // skip straight to the mandatory pass over the pile instead of falling
+    // back to local steering that can orbit the obstacle forever.
+    if (!path?.length && !target.finalApproach) {
+      target.x = pile.x;
+      target.y = pile.y;
+      target.finalApproach = true;
+      path = this.planFateContactPath(target, pile);
+    }
+    if (!path?.length) return false;
+
+    target.path = path;
+    target.pathIndex = 0;
+    target.waypointBest = Infinity;
+    target.waypointStallT = 0;
+    return true;
+  }
+
+  planFateContactPath(target, pile) {
+    const towardRobot = angleTo(pile.x, pile.y, this.x, this.y);
+    const candidates = [{ x: pile.x, y: pile.y }];
+    // Dog placement is valid for the smaller pup, so a pile can land close
+    // enough to furniture that Robo's center cannot occupy the exact mark.
+    // Nearby goals remain inside the splat radius and let the physics-sized
+    // planner choose a safe side from which the wheels still cross the pile.
+    for (const radius of [16, 32, 46]) {
+      for (let index = 0; index < 16; index++) {
+        const angle = towardRobot + index * Math.PI / 8;
+        candidates.push({
+          x: pile.x + Math.cos(angle) * radius,
+          y: pile.y + Math.sin(angle) * radius,
+        });
+      }
+    }
+
+    const room = this.roomFor();
+    for (const candidate of candidates) {
+      if (!room?.isFree(candidate.x, candidate.y, R, { clearance: R })) continue;
+      const path = this.planRoomTravelPath(candidate.x, candidate.y, { clearance: R });
+      if (!path?.length) continue;
+      target.x = candidate.x;
+      target.y = candidate.y;
+      return path;
+    }
+    return null;
+  }
+
+  followFatePath(dt) {
+    const target = this.fateTarget;
+    const pile = this.bindFatePile(target);
+    if (!target || !pile) {
+      this.clearFateTarget();
+      return true;
+    }
+    if (!target.path?.length || target.pathIndex >= target.path.length) {
+      this.clearFatePath(target);
+      if (!this.planFatePath(target)) {
+        this.clearFateTarget();
+        return true;
+      }
+    }
+
+    const waypoint = target.path[target.pathIndex];
+    const distance = dist(this.x, this.y, waypoint.x, waypoint.y);
+    if (distance < target.waypointBest - 0.5) {
+      target.waypointBest = distance;
+      target.waypointStallT = 0;
+    } else {
+      target.waypointStallT += dt;
+    }
+    if (target.waypointStallT > 2.2) {
+      this.clearFatePath(target);
+      this.escape = null;
+      if (!this.planFatePath(target)) this.clearFateTarget();
+      return false;
+    }
+
+    const lastWaypoint = target.pathIndex === target.path.length - 1;
+    let reachedWaypoint = false;
+    if ((!lastWaypoint || !target.finalApproach) && distance < 6) {
+      // Every planned segment begins at the exact preceding waypoint. Snap the
+      // final few harmless pixels of an intermediate leg so residual speed or
+      // a generous arrival radius cannot start the next tangent from an
+      // unvalidated point beside furniture.
+      this.x = waypoint.x;
+      this.y = waypoint.y;
+      this.speed = 0;
+      this.targetSpeed = 0;
+      reachedWaypoint = true;
+    } else {
+      reachedWaypoint = this.driveTravelWaypoint(
+        waypoint.x,
+        waypoint.y,
+        lastWaypoint ? 145 : 155,
+        0.25,
+      );
+    }
+    if (reachedWaypoint) {
+      target.pathIndex++;
+      target.waypointBest = Infinity;
+      target.waypointStallT = 0;
+      if (target.pathIndex >= target.path.length) {
+        if (this.game.dirt.items.includes(pile) && !target.finalApproach) {
+          target.x = pile.x;
+          target.y = pile.y;
+          target.finalApproach = true;
+          this.clearFatePath(target);
+        } else if (this.game.dirt.items.includes(pile)) {
+          // The game resolves the splat immediately after Robot.update(). Keep
+          // ownership for that frame; if an unusually large time step stopped
+          // just short, replanning repeats the collision-checked final pass.
+          this.clearFatePath(target);
+        }
+      }
+    }
+    return false;
+  }
+
   otherCleaningWorkRoomId() {
     const house = this.game.house;
     if (!house?.rooms || this.roomHasChoreWork(this.roomId) || this.roomHasRawPoop(this.roomId)) {
@@ -808,7 +1349,8 @@ export class Robot {
     for (const roomId of house.rooms.keys()) {
       if (roomId === this.roomId) continue;
       const hasVacuumWork = this.game.modeHasVac() && this.game.dirt.items.some((d) =>
-        d.roomId === roomId && d.vac && !d.sucking && (!d.shunned || d.shunned <= now)
+        d.roomId === roomId && d.vac && !d.sucking && d.drop <= 0 && !d.toss &&
+        (!d.shunned || d.shunned <= now)
       );
       if (hasVacuumWork || this.roomHasChoreWork(roomId) || this.roomHasRawPoop(roomId)) {
         return roomId;
@@ -821,6 +1363,10 @@ export class Robot {
     const alreadyGoing = this.dockReason === reason &&
       (this.state === 'godock' || this.roomTravel?.resume?.state === 'godock');
     this.dockReason = reason;
+    // A dock command immediately takes ownership of motion. The normal dock
+    // route sets a new speed in this frame; if routing is temporarily unable
+    // to begin, Robo waits in place instead of carrying on with the old job.
+    this.targetSpeed = 0;
     if (!alreadyGoing) {
       if (reason === 'battery') {
         this.setExpr('sleepy', 3);
@@ -834,11 +1380,44 @@ export class Robot {
       }
     }
     if (this.roomTravel) {
-      // Finish a doorway crossing before redirecting. Its caller then resumes
-      // in the normal docking state and routes home from whichever side won.
-      if (this.roomTravel.owner === 'state') {
-        this.roomTravel.resume = { ...this.roomTravel.resume, state: 'godock' };
+      const unrelatedStateTravel = this.roomTravel.owner === 'state' &&
+        this.roomTravel.reason !== 'dock';
+      const dockRoomId = this.game.dock.roomId ?? 'living';
+      const alreadyHeadingToDockRoom =
+        this.roomTravel.targetRoomId === dockRoomId;
+      const interruptTravel = unrelatedStateTravel &&
+        !alreadyHeadingToDockRoom &&
+        (reason === 'summon' || reason === 'battery');
+      if (interruptTravel) {
+        // A summon and critical battery are stop commands, not a request to
+        // finish an unrelated cleaning trip. House restores the source-side
+        // doorway anchor even if the visual crossing had already begun.
+        this.abortRoomTravel();
+      } else {
+        // A crossing already taking the robot toward the dock room is the
+        // fastest route home even if cleaning originally started it. Preserve
+        // that progress and resume in the normal docking state on arrival.
+        if (this.roomTravel.owner === 'state') {
+          this.roomTravel.resume = { ...this.roomTravel.resume, state: 'godock' };
+        }
+        return;
       }
+    }
+
+    const dockPose = this.dockApproachPose();
+    if (dockPose === 'parked') {
+      this.x = this.game.dock.x;
+      this.y = this.game.dock.parkY;
+      this.targetSpeed = 0;
+      this.speed = 0;
+      this.arriveAtDock({ announce: false });
+      return;
+    }
+    if (dockPose === 'aligned') {
+      this.state = 'align';
+      this.stateT = 0;
+      this.seekDirt = null;
+      this.bump = null;
       return;
     }
     this.state = 'godock';
@@ -850,7 +1429,12 @@ export class Robot {
     // tapping the dock always means "go home and STAY until tapped awake"
     this.stayDocked = true;
     if (['docked', 'charge', 'empty', 'washpads', 'align'].includes(this.state)) return;
-    if (this.controlled) return; // release() sends it home when the action ends
+    if (this.controlled) {
+      // The dock is an immediate stop command. Action cleanup puts any held
+      // sock or toy back on the floor before control is released into docking.
+      this.game.actions?.cancelCurrent?.({ dockReason: 'summon' });
+      return;
+    }
     this.goDock('summon');
   }
 
@@ -887,14 +1471,19 @@ export class Robot {
     this.game.sound.questionBeep();
   }
 
-  notifyNewDirt(d) {
+  notifyNewDirt() {
     if (this.controlled) return;
     if (!this.game.modeHasVac()) return; // mop-only: crumbs aren't its job
-    if ((d.roomId ?? this.roomId) !== this.roomId) return;
     if (this.state === 'clean' || this.state === 'seek') {
-      this.seekDirt = d;
-      this.seekT = 0;
-      this.state = 'seek';
+      // A new tap gets an immediate acknowledgement, but it does not yank the
+      // robot away from a valid committed route. The next normal selection
+      // happens as soon as that target is gone (or right away if there is no
+      // current target), using actual drivable route length.
+      if (!this.vacuumTargetAvailable(this.seekDirt)) {
+        const choice = this.chooseVacuumTarget();
+        if (this.commitVacuumTarget(choice)) this.state = 'seek';
+      }
+      this.seekCheckT = Math.min(this.seekCheckT, 0.2);
       if (chance(0.5)) this.game.sound.ackBeep();
       this.setExpr('determined', 1.6);
     } else if (this.state === 'docked' && !this.stayDocked) {
@@ -943,6 +1532,7 @@ export class Robot {
     this.brushSpin += dt * (this.suctionOn ? 22 : 4);
     if (this.bumpFlash > 0) this.bumpFlash -= dt;
     if (this.emptyShake > 0) this.emptyShake -= dt;
+    if (this.wetTrackCooldown > 0) this.wetTrackCooldown -= dt;
 
     // hop physics
     if (this.z > 0 || this.vz !== 0) {
@@ -971,7 +1561,7 @@ export class Robot {
     const active = !['docked', 'charge', 'empty', 'washpads'].includes(this.state);
     if (active && !g.freezeBattery) {
       this.battery = clamp(this.battery - dt / 150, 0, 1);
-      if (this.battery <= 0.16 && !this.controlled && !['godock', 'align', 'travel'].includes(this.state)) {
+      if (this.isBatteryCritical() && !this.controlled && !['godock', 'align'].includes(this.state)) {
         this.goDock('battery');
       }
     }
@@ -1035,7 +1625,9 @@ export class Robot {
       }
     }
 
-    // dirty wheels stamp smears along both wheel tracks while oblivious
+    // Dirty wheels trail the matching mess by distance traveled, so the
+    // result is consistent at 30 or 60 fps. Milk moves conserved field volume;
+    // poop and vomit leave bounded decal tracks.
     if (this.smearT > 0) {
       this.smearRoomId ??= this.roomId;
       this.smearT -= dt;
@@ -1044,32 +1636,44 @@ export class Robot {
         this.smearDist += sp * dt;
         if (this.smearDist > 24) {
           this.smearDist = 0;
-          const px = Math.cos(this.heading + Math.PI / 2);
-          const py = Math.sin(this.heading + Math.PI / 2);
-          for (const side of [-1, 1]) {
-            g.smears.stamp(
-              this.x + px * 33 * side,
-              this.y + py * 33 * side,
-              this.heading,
-              { roomId: this.roomId },
-            );
+          const points = this.wheelTrackPoints();
+          if (this.smearKind === 'milk' && this.smearFieldId) {
+            const sources = this.smearTrackPoints ?? points;
+            for (let index = 0; index < points.length; index++) {
+              const moved = g.smears.transferMilk(
+                this.smearFieldId,
+                sources[index],
+                points[index],
+              );
+              if (moved > 0) sources[index] = points[index];
+            }
+            this.smearTrackPoints = sources;
+          } else {
+            for (const point of points) {
+              g.smears.stamp(point.x, point.y, this.heading, {
+                roomId: this.roomId,
+                kind: this.smearKind ?? 'poop',
+              });
+            }
           }
-          if (chance(0.2)) {
+          if (this.smearKind !== 'milk' && chance(0.2)) {
             g.smears.stamp(
               this.x + rand(-16, 16),
               this.y + rand(-16, 16),
               this.heading,
-              { roomId: this.roomId },
+              { roomId: this.roomId, kind: this.smearKind ?? 'poop' },
             );
           }
         }
       }
       if (this.smearT <= 0) {
-        if (g.actions.current?.name !== 'mopMode') {
-          g.pendingMop = true; // the awful realization comes next
-          g.pendingMopRoomId = this.smearRoomId ?? this.roomId;
-        }
+        // The persistent marks themselves remain the work signal. Selected
+        // vacuum mode never turns this burst into an equipment request.
+        this.wetTrackCooldown = Math.max(this.wetTrackCooldown, 3.2);
         this.smearRoomId = null;
+        this.smearKind = null;
+        this.smearFieldId = null;
+        this.smearTrackPoints = null;
       }
     }
 
@@ -1180,20 +1784,22 @@ export class Robot {
         break;
       }
       case 'seek': {
-        if (!this.seekDirt || this.seekDirt.roomId !== this.roomId ||
-            this.seekDirt.sucking || !g.dirt.items.includes(this.seekDirt)) {
-          const player = g.dirt.nearestVac(this.x, this.y, true, this.roomId);
-          const localWork = g.dirt.nearestVac(this.x, this.y, false, this.roomId);
-          const next = player || (chance(0.5) ? localWork : null);
-          if (next && dist(this.x, this.y, next.x, next.y) < 900) {
-            this.seekDirt = next;
-            this.seekT = 0;
+        if (!this.vacuumTargetAvailable(this.seekDirt)) {
+          const choice = this.chooseVacuumTarget();
+          if (this.commitVacuumTarget(choice)) {
+            // route and target are now committed until the item disappears,
+            // becomes unreachable, or is explicitly shunned after a stall
           } else {
             this.seekDirt = null;
             this.state = 'clean';
             this.cleanMode = 'wander';
             this.modeTimer = rand(6, 11);
-            if (!localWork) {
+            if (this.hasLandingVacuumTarget()) {
+              // A sprinkle lands in a few tenths of a second. Check again
+              // promptly instead of treating the house as clean for a full
+              // normal scan interval or leaving through the doorway.
+              this.seekCheckT = Math.min(this.seekCheckT, 0.18);
+            } else {
               const otherRoomId = this.otherCleaningWorkRoomId();
               if (otherRoomId) this.requestRoom(otherRoomId, 'cleaning');
             }
@@ -1211,12 +1817,7 @@ export class Robot {
         // real robots eventually shrug and try something else.
         this.seekT += dt;
         if (this.seekT > 8) {
-          this.seekDirt.shunned = g.time + 30;
-          this.seekDirt = null;
-          this.clearSeekPath();
-          this.seekT = 0;
-          g.sound.questionBeep();
-          this.setExpr('dizzy', 1.2);
+          this.abandonVacuumTarget(this.seekDirt);
           break;
         }
         this.driveTo(this.seekDirt.x, this.seekDirt.y, 175, 20);
@@ -1334,22 +1935,7 @@ export class Robot {
       }
     }
     if (this.fateTarget) {
-      const pile = this.bindFatePile();
-      if (this.driveTo(this.fateTarget.x, this.fateTarget.y, 145, 30)) {
-        if (pile && this.game.dirt.items.includes(pile) && !this.fateTarget.finalApproach) {
-          // Local obstacle avoidance can reach the authored point beyond a
-          // pile while skirting the actual mess. Keep ownership of that exact
-          // pile and make its center the final approach. Arriving within 30px
-          // necessarily crosses the game's wider splat radius while moving.
-          this.fateTarget.x = pile.x;
-          this.fateTarget.y = pile.y;
-          this.fateTarget.finalApproach = true;
-          this.bump = null;
-          this.escape = null;
-        } else {
-          this.clearFateTarget();
-        }
-      }
+      this.followFatePath(dt);
       return;
     }
     // pause-and-look-around moments
@@ -1381,25 +1967,22 @@ export class Robot {
       }
     }
 
-    // chance to notice dirt nearby (mop-only ignores vacuumable dirt)
+    // Periodically choose the shortest collision-checked route to landed dirt.
+    // Once chosen, seek mode keeps that target so rapid taps cannot cause
+    // frustrating U-turns.
     this.seekCheckT -= dt;
     if (this.seekCheckT <= 0) {
-      this.seekCheckT = 1.4;
-      let localWork = null;
+      const landingWork = this.hasLandingVacuumTarget();
+      this.seekCheckT = landingWork ? 0.18 : 1.4;
+      let choice = null;
       if (g.modeHasVac()) {
-        const player = g.dirt.nearestVac(this.x, this.y, true, this.roomId);
-        const target = player || g.dirt.nearestVac(this.x, this.y, false, this.roomId);
-        localWork = target;
-        if (target) {
-          const d = dist(this.x, this.y, target.x, target.y);
-          if (player || (d < 460 && chance(0.55))) {
-            this.seekDirt = target;
-            this.state = 'seek';
-            return;
-          }
+        choice = this.chooseVacuumTarget();
+        if (this.commitVacuumTarget(choice)) {
+          this.state = 'seek';
+          return;
         }
       }
-      if (!localWork) {
+      if (!choice && !landingWork) {
         const otherRoomId = this.otherCleaningWorkRoomId();
         if (otherRoomId && this.requestRoom(otherRoomId, 'cleaning')) return;
       }
@@ -1508,19 +2091,24 @@ export class Robot {
     // (handled by game via proximity, not collision)
   }
 
-  arriveAtDock() {
+  arriveAtDock({ announce = true } = {}) {
     const g = this.game;
-    g.sound.dockChime();
-    g.dock.glow = 2;
-    g.particles.sparkle(this.x, this.y - 30, 6);
+    if (announce) {
+      g.sound.dockChime();
+      g.dock.glow = 2;
+      g.particles.sparkle(this.x, this.y - 30, 6);
+    }
     // backed in: face out into the room, rear (dust port) against the tower
     this.heading = Math.PI / 2;
-    // every return services whatever's equipped, in the order the real one
-    // does it: empty the bin, wash the pads, then charge
+    // Normally the dock empties, washes, then tops up. A low-battery or
+    // battery-requested return charges first so maintenance cannot postpone the
+    // reason the robot came home.
     this.dockPlan = [];
+    const chargeFirst = this.dockReason === 'battery' || this.isBatteryCritical();
+    if (chargeFirst && this.battery < 0.95) this.dockPlan.push('charge');
     if (this.bin > 0.12 || this.dockReason === 'bin') this.dockPlan.push('empty');
     if (this.mopMode && g.mopDirt > 0.1) this.dockPlan.push('wash');
-    if (this.battery < 0.95) this.dockPlan.push('charge');
+    if (!chargeFirst && this.battery < 0.95) this.dockPlan.push('charge');
     this.nextDockTask();
   }
 
@@ -2025,6 +2613,39 @@ export class Robot {
     }
     ctx.restore();
   }
+}
+
+function minHeapPush(heap, entry) {
+  let index = heap.length;
+  heap.push(entry);
+  while (index > 0) {
+    const parent = Math.floor((index - 1) / 2);
+    if (heap[parent].cost <= entry.cost) break;
+    heap[index] = heap[parent];
+    index = parent;
+  }
+  heap[index] = entry;
+}
+
+function minHeapPop(heap) {
+  const first = heap[0];
+  const last = heap.pop();
+  if (heap.length && last) {
+    let index = 0;
+    while (true) {
+      const left = index * 2 + 1;
+      if (left >= heap.length) break;
+      const right = left + 1;
+      const child = right < heap.length && heap[right].cost < heap[left].cost
+        ? right
+        : left;
+      if (heap[child].cost >= last.cost) break;
+      heap[index] = heap[child];
+      index = child;
+    }
+    heap[index] = last;
+  }
+  return first;
 }
 
 function axisValues(min, max, spacing, extras = []) {

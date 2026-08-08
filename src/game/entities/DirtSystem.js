@@ -28,6 +28,14 @@ export class DirtSystem {
     return this.game.house?.room(roomId) ?? this.game.room;
   }
 
+  pickupClearance(item = null) {
+    const needsRobotAccess = !item || item.vac || item.type === 'sock' ||
+      item.type === 'toy_ball' || item.type === 'toy_block';
+    return needsRobotAccess
+      ? (this.game.robot?.radius ?? 62) + 8
+      : FLOOR_ITEM_HUD_CLEARANCE;
+  }
+
   // This remains a whole-house count so existing victory and HUD code can
   // reason about all persistent dirt, including dirt in a hidden room.
   count() {
@@ -81,6 +89,7 @@ export class DirtSystem {
   // A toddler tapped the floor: sprinkle a little cluster of mess!
   playerSprinkle(x, y, roomId = this.activeRoomId()) {
     const room = this.roomFor(roomId);
+    const clearance = this.pickupClearance();
     const type = TAP_CYCLE[this.tapCycleIdx % TAP_CYCLE.length];
     this.tapCycleIdx++;
     const n = type === 'dustbunny' ? 1 : type === 'sparkle' ? 2 : 3;
@@ -89,7 +98,7 @@ export class DirtSystem {
       const r = i === 0 ? 0 : rand(18, 52);
       const rawX = x + Math.cos(a) * r;
       const rawY = y + Math.sin(a) * r;
-      const point = room.nearestFreePoint?.(rawX, rawY, FLOOR_ITEM_HUD_CLEARANCE)
+      const point = room.nearestFreePoint?.(rawX, rawY, clearance)
         ?? { x: rawX, y: rawY };
       const d = this.spawn(type, point.x, point.y, {
         playerMade: true,
@@ -104,7 +113,7 @@ export class DirtSystem {
   // small crumb while dragging finger
   playerCrumb(x, y, roomId = this.activeRoomId()) {
     const room = this.roomFor(roomId);
-    const point = room.nearestFreePoint?.(x, y, FLOOR_ITEM_HUD_CLEARANCE) ?? { x, y };
+    const point = room.nearestFreePoint?.(x, y, this.pickupClearance()) ?? { x, y };
     this.spawn(pick(['crumbs', 'cereal']), point.x, point.y, {
       playerMade: true,
       drop: 40,
@@ -182,8 +191,28 @@ export class DirtSystem {
       }
       // physics for rolled toys
       if (Math.abs(d.vx) > 1 || Math.abs(d.vy) > 1) {
-        d.x += d.vx * dt;
-        d.y += d.vy * dt;
+        const clearance = this.pickupClearance(d);
+        const nextX = d.x + d.vx * dt;
+        const nextY = d.y + d.vy * dt;
+        if (room.isFree(nextX, nextY, clearance, { solidTable: true })) {
+          d.x = nextX;
+          d.y = nextY;
+        } else {
+          // Toys bounce off furniture instead of rolling underneath it where
+          // the arm can never reach them.
+          if (!room.isFree(d.x, d.y, clearance, { solidTable: true })) {
+            const point = room.nearestFreePoint(
+              d.x,
+              d.y,
+              clearance,
+              { solidTable: true },
+            );
+            d.x = point.x;
+            d.y = point.y;
+          }
+          d.vx *= -0.7;
+          d.vy *= -0.7;
+        }
         d.vx *= 1 - 2.4 * dt;
         d.vy *= 1 - 2.4 * dt;
         if (d.type === 'toy_ball') d.rot += d.vx * 0.02 * dt * 60;
@@ -223,16 +252,17 @@ export class DirtSystem {
   }
 
   keepOutOfHud(item, previous, room = this.roomFor(item.roomId)) {
-    if (!room?.isHudFree || room.isHudFree(item.x, item.y, FLOOR_ITEM_HUD_CLEARANCE)) return false;
-    if (previous && room.isHudFree(previous.x, previous.y, FLOOR_ITEM_HUD_CLEARANCE)) {
+    const clearance = this.pickupClearance(item);
+    if (!room?.isHudFree || room.isHudFree(item.x, item.y, clearance)) return false;
+    if (previous && room.isHudFree(previous.x, previous.y, clearance)) {
       item.x = previous.x;
       item.y = previous.y;
     } else {
       const point = room.nearestFreePoint?.(
         item.x,
         item.y,
-        FLOOR_ITEM_HUD_CLEARANCE,
-      ) ?? room.randomFloorPoint(FLOOR_ITEM_HUD_CLEARANCE);
+        clearance,
+      ) ?? room.randomFloorPoint(clearance);
       item.x = point.x;
       item.y = point.y;
     }

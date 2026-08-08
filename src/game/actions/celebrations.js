@@ -33,6 +33,9 @@ export const SpinDance = {
       }
     }
   },
+  end(g) {
+    g.robot.spinExtra = 0;
+  },
 };
 
 // --------------------------------------------------------------- happy beeps
@@ -61,6 +64,9 @@ export const HappyBeeps = {
       r.spinExtra = 0;
       this.finished = true;
     }
+  },
+  end(g) {
+    g.robot.spinExtra = 0;
   },
 };
 
@@ -172,7 +178,8 @@ export const WinParty = {
   canRun: () => false,
   maxDur: 8,
   start(g) {
-    this.state = { t: 0, burstT: 0.4, shineT: 0, hops: 0 };
+    const roomId = g.robot.roomId ?? g.room?.id ?? 'living';
+    this.state = { t: 0, burstT: 0.4, shineT: 0, hops: 0, roomId };
     g.say('all_clean', { force: true });
     g.celebrate(); // the big sky-fireworks show
     g.sound.tada();
@@ -187,8 +194,9 @@ export const WinParty = {
     st.shineT -= dt;
     if (st.shineT <= 0 && st.t < 3.4) {
       st.shineT = 0.16;
-      const p = g.room.randomFloorPoint(30);
-      g.particles.sparkle(p.x, p.y, 2);
+      const room = g.house?.room?.(st.roomId) ?? g.room;
+      const p = room.randomFloorPoint(30);
+      g.particles.sparkle(p.x, p.y, 2, st.roomId);
     }
     // proud pirouette with confetti hops while the fireworks pop overhead
     if (st.t < 3.0) r.spinExtra += dt * 6;

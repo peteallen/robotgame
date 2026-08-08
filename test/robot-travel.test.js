@@ -204,7 +204,7 @@ test('every planned doorway segment is collision-free at the physics radius', ()
   }
 });
 
-test('a bypassed fate waypoint retargets its exact raw pile and reaches the splat radius', () => {
+test('a collision-checked fate route reaches its exact raw pile without stealing another', () => {
   for (const hz of [30, 60]) {
     const game = makeGame({ hz });
     const robot = placeRobot(game, 'kitchen', { x: 175, y: 315 });
@@ -223,12 +223,10 @@ test('a bypassed fate waypoint retargets its exact raw pile and reaches the spla
       pile,
     };
 
-    let finalApproachSeen = false;
     let splatted = false;
     for (let frame = 0; frame < 20 * hz; frame++) {
       game.time += game.dt;
       robot.update(game.dt);
-      finalApproachSeen ||= robot.fateTarget?.finalApproach === true;
       if (Math.abs(robot.speed) > 25 &&
           Math.hypot(robot.x - pile.x, robot.y - pile.y) < robot.radius * 0.85) {
         game.dirt.items.splice(game.dirt.items.indexOf(pile), 1);
@@ -237,8 +235,12 @@ test('a bypassed fate waypoint retargets its exact raw pile and reaches the spla
         break;
       }
     }
-    assert.equal(finalApproachSeen, true, `${hz}Hz should detect the bypass`);
-    assert.equal(splatted, true, `${hz}Hz should reach the tracked pile`);
+    assert.equal(
+      splatted,
+      true,
+      `${hz}Hz should reach the tracked pile; stopped at ${robot.x},${robot.y} with ` +
+        `${JSON.stringify(robot.fateTarget?.path)}`,
+    );
     assert.equal(otherPile.fated, true, 'the unrelated pile remains independently owned');
   }
 });
@@ -260,7 +262,7 @@ test('a riding dog stays attached and cannot hop off during room travel', () => 
   for (let frame = 0; frame < 20 / game.dt; frame++) {
     game.time += game.dt;
     robot.update(game.dt);
-    if (dog.roomId === game.house.activeRoomId) dog.update(game.dt);
+    dog.update(game.dt);
     if (robot.roomTravel) {
       sawOutOfBoundsPose ||= robot.x < game.room.bounds.minX || robot.x > game.room.bounds.maxX;
       assert.equal(dog.state, 'ride');
@@ -274,6 +276,11 @@ test('a riding dog stays attached and cannot hop off during room travel', () => 
   assert.equal(dog.roomId, 'living');
   assert.equal(dog.state, 'ride');
   assert.equal(sawOutOfBoundsPose, true);
+  assert.equal(
+    game.house.activeRoomId,
+    'kitchen',
+    'the physical doorway trip must not pull the camera after the robot',
+  );
 
   dog.update(game.dt);
   assert.equal(dog.state, 'walk', 'the paused ride timer resumes after arrival');

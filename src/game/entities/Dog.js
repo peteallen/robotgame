@@ -132,9 +132,10 @@ export class Dog {
         this.y = g.robot.y - 26;
         return;
       }
-    } else if (!this.isActiveRoom()) {
-      return;
     }
+    // Room selection controls visibility and taps only. The dog keeps walking,
+    // finishing accidents, and reacting to the robot in its physical room even
+    // while the player watches elsewhere.
     const movementStart = { x: this.x, y: this.y };
     this.stateT += dt;
     this.tailT += dt;
@@ -682,7 +683,6 @@ export class Dog {
   }
 
   beginWalk(forcedTarget = null) {
-    if (!this.isPresent()) return false;
     this.clearPottyRoute();
     const room = this.owningRoom();
     this.target = forcedTarget && room.isHudFree?.(forcedTarget.x, forcedTarget.y, DOG_PLAYFIELD_RADIUS)
@@ -696,7 +696,7 @@ export class Dog {
   // tear after the robot, barking — pure joy, zero malice
   startChase() {
     const g = this.game;
-    if (!this.isActiveRoom() || this.roomId !== this.robotRoomId()) return false;
+    if (this.roomId !== this.robotRoomId()) return false;
     if (['ride', 'startle', 'chase'].includes(this.state) || this.pooping()) return false;
     if (!['clean', 'seek', 'leaving', 'godock'].includes(g.robot.state)) return false;
     this.state = 'chase';
@@ -759,7 +759,7 @@ export class Dog {
   }
 
   startle() {
-    if (!this.isActiveRoom() || this.roomId !== this.robotRoomId()) return false;
+    if (this.roomId !== this.robotRoomId()) return false;
     if (this.state === 'ride' || this.state === 'startle' || this.pooping()) return false;
     const g = this.game;
     const away = angleTo(g.robot.x, g.robot.y, this.x, this.y);
@@ -773,7 +773,7 @@ export class Dog {
 
   tryRide() {
     const r = this.game.robot;
-    if (!this.isActiveRoom() || this.roomId !== this.robotRoomId()) return false;
+    if (this.roomId !== this.robotRoomId()) return false;
     if (this.state === 'ride' || this.pooping()) return false;
     if (['align', 'empty', 'charge', 'docked', 'washpads'].includes(r.state)) return false;
     this.state = 'ride';

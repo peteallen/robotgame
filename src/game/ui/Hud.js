@@ -1,20 +1,44 @@
-// No-text HUD, deliberately minimal: dust-bin/mop pill + mode picker top-left,
+// No-text HUD: dust-bin/mop pill + mode and return-home controls top-left,
 // sound toggle top-right. The battery gauge lives ON the robot itself.
 import { TAU, clamp, lerp } from '../core/math.js';
 import { roundRect } from '../world/Room.js';
 import { Minimap } from './Minimap.js';
+
+const CONTROL_X = 22;
+const CONTROL_Y = 90;
+const CONTROL_SLOT_X = 10;
+const CONTROL_SLOT_Y = 8;
+const CONTROL_SLOT_STEP = 76;
+const CONTROL_SLOT_W = 70;
+const CONTROL_SLOT_H = 50;
+
+export const HUD_HOME_BUTTON = Object.freeze({
+  cx: 327,
+  cy: 125,
+  radius: 45,
+  hitRadius: 60,
+});
+
+function controlSlotHit(x, y, index) {
+  const sx = CONTROL_X + CONTROL_SLOT_X + index * CONTROL_SLOT_STEP;
+  const sy = CONTROL_Y + CONTROL_SLOT_Y;
+  return x > sx - 6 && x < sx + CONTROL_SLOT_W + 6 &&
+    y > sy - 6 && y < sy + CONTROL_SLOT_H + 6;
+}
 
 export class Hud {
   constructor(game) {
     this.game = game;
     this.t = 0;
     this.soundBtnPop = 0;
+    this.homeBtnPop = 0;
     this.minimap = new Minimap(game);
   }
 
   update(dt) {
     this.t += dt;
     if (this.soundBtnPop > 0) this.soundBtnPop -= dt * 3;
+    if (this.homeBtnPop > 0) this.homeBtnPop -= dt * 3;
     this.minimap.update(dt);
   }
 
@@ -23,10 +47,10 @@ export class Hud {
   hitTest(x, y) {
     if (this.minimap.hitTest(x, y)) return true;
     for (let i = 0; i < 3; i++) {
-      const sx = 22 + 10 + i * 76;
-      const sy = 90 + 8;
-      if (x > sx - 6 && x < sx + 70 + 6 && y > sy - 6 && y < sy + 50 + 6) return true;
+      if (controlSlotHit(x, y, i)) return true;
     }
+    if (Math.hypot(x - HUD_HOME_BUTTON.cx, y - HUD_HOME_BUTTON.cy) <
+        HUD_HOME_BUTTON.hitRadius) return true;
     return Math.hypot(x - 1610, y - 66) < 52;
   }
 
@@ -37,12 +61,16 @@ export class Hud {
     // mode picker slots (pill origin 22, 90) — generous fat-finger padding
     const modes = ['vac', 'mop', 'both'];
     for (let i = 0; i < 3; i++) {
-      const sx = 22 + 10 + i * 76;
-      const sy = 90 + 8;
-      if (x > sx - 6 && x < sx + 70 + 6 && y > sy - 6 && y < sy + 50 + 6) {
+      if (controlSlotHit(x, y, i)) {
         g.requestMode(modes[i]);
         return true;
       }
+    }
+    if (Math.hypot(x - HUD_HOME_BUTTON.cx, y - HUD_HOME_BUTTON.cy) <
+        HUD_HOME_BUTTON.hitRadius) {
+      this.homeBtnPop = 1;
+      g.robot.summon();
+      return true;
     }
     // sound button top-right
     if (Math.hypot(x - 1610, y - 66) < 52) {
@@ -147,8 +175,8 @@ export class Hud {
       pctx.restore();
     });
 
-    // ---- mode picker pill (vac / mop / both) — pick your cleaning flavor
-    this.drawPill(ctx, 22, 90, 245, (pctx) => {
+    // ---- control pill: vac / mop / both + an always-available dock return
+    this.drawPill(ctx, CONTROL_X, CONTROL_Y, 245, (pctx) => {
       const modes = ['vac', 'mop', 'both'];
       const pending = r.mopMode !== g.modeNeedsPads(); // robot's off to the dock to swap gear
       for (let i = 0; i < 3; i++) {
@@ -182,7 +210,29 @@ export class Hud {
           pctx.stroke();
         }
       }
+
     });
+
+    // ---- separate large return-home button beside the mode picker. Its
+    // invisible hit halo remains at least 44 CSS pixels on compact landscape.
+    const returning = !!r.stayDocked;
+    const homePop = 1 + Math.max(0, this.homeBtnPop) * 0.18;
+    ctx.save();
+    ctx.translate(HUD_HOME_BUTTON.cx, HUD_HOME_BUTTON.cy);
+    ctx.scale(homePop, homePop);
+    ctx.fillStyle = returning
+      ? 'rgba(69, 205, 187, 0.96)'
+      : 'rgba(255, 252, 245, 0.94)';
+    ctx.strokeStyle = returning
+      ? `rgba(255, 255, 255, ${0.65 + 0.3 * Math.abs(Math.sin(this.t * 5))})`
+      : 'rgba(90, 60, 20, 0.22)';
+    ctx.lineWidth = returning ? 5 : 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, HUD_HOME_BUTTON.radius, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+    drawDockIcon(ctx, 0, 0, returning);
+    ctx.restore();
 
     // ---- sound button (top-right)
     const muted = g.sound.muted;
@@ -246,6 +296,38 @@ export class Hud {
     drawContent(ctx);
     ctx.restore();
   }
+}
+
+function drawDockIcon(ctx, cx, cy, active) {
+  const color = active ? '#fff' : '#3a4152';
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // A small tower and charging pad echo the full-size dock in the room.
+  roundRect(ctx, -13, -17, 26, 25, 7);
+  ctx.fill();
+  ctx.globalAlpha = active ? 0.62 : 0.35;
+  roundRect(ctx, -23, 8, 46, 10, 5);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // An inbound arrow aimed at the pad makes this a command to come home,
+  // rather than merely another maintenance gauge.
+  ctx.beginPath();
+  ctx.moveTo(0, 19);
+  ctx.lineTo(0, 5);
+  ctx.moveTo(-6, 11);
+  ctx.lineTo(0, 5);
+  ctx.lineTo(6, 11);
+  ctx.strokeStyle = active ? '#239d91' : '#fffaf0';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  ctx.restore();
 }
 
 // draws a vac/mop icon at (cx, cy), sprite if we have one, doodle if not

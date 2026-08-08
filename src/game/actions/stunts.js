@@ -2,10 +2,25 @@
 // a disco, hovers on jets, dives under the couch, sneezes, or gives the dog a
 // ride. Big movement, big spectacle, no chores.
 import { TAU, rand, pick, chance, clamp, lerp, dist, angleTo } from '../core/math.js';
+import { settleRobotOnOpenFloor } from './helpers.js';
 
-function roomFurniture(g, name) {
-  return g.room?.getFurniture?.(name) ??
-    g.room?.furniture?.find((item) => item.name === name) ?? null;
+function robotRoom(g, roomId = g.robot?.roomId) {
+  return g.house?.room?.(roomId) ?? g.room;
+}
+
+function captureRobotRoom(g, state) {
+  state.roomId = g.robot?.roomId ?? g.room?.id ?? 'living';
+  state.room = robotRoom(g, state.roomId);
+  return state.room;
+}
+
+function actionRoom(g, state) {
+  return state.room ?? robotRoom(g, state.roomId);
+}
+
+function roomFurniture(g, name, room = robotRoom(g)) {
+  return room?.getFurniture?.(name) ??
+    room?.furniture?.find((item) => item.name === name) ?? null;
 }
 
 // ---------------------------------------------------------------- turbo zoom
@@ -16,11 +31,12 @@ export const TurboZoom = {
   canRun: (g) => g.robot.battery > 0.3,
   start(g) {
     const r = g.robot;
+    const room = captureRobotRoom(g, this.state);
     r.trailMode = 'turbo';
     r.actionSuction = true;
     r.setExpr('determined', 7);
     g.sound.ackBeep();
-    this.state.target = g.room.randomFloorPoint(70);
+    this.state.target = room.randomFloorPoint(70);
     this.state.legs = 0;
   },
   update(g, dt) {
@@ -34,7 +50,7 @@ export const TurboZoom = {
         r.setExpr('happy', 2);
         g.sound.happyBeeps(3);
       } else {
-        this.state.target = g.room.randomFloorPoint(70);
+        this.state.target = actionRoom(g, this.state).randomFloorPoint(70);
         g.sound.squeak();
       }
     }
@@ -52,11 +68,12 @@ export const RainbowTrail = {
   canRun: (g) => g.robot.battery > 0.25,
   start(g) {
     const r = g.robot;
+    const room = captureRobotRoom(g, this.state);
     r.trailMode = 'rainbow';
     r.actionSuction = true;
     r.setExpr('happy', 9);
     g.sound.sparklePickup();
-    this.state.target = g.room.randomFloorPoint(70);
+    this.state.target = room.randomFloorPoint(70);
     this.state.sparkleT = 0;
   },
   update(g, dt) {
@@ -67,7 +84,7 @@ export const RainbowTrail = {
       g.particles.sparkle(r.x - Math.cos(r.heading) * 50, r.y - Math.sin(r.heading) * 50, 2);
     }
     if (r.driveTo(this.state.target.x, this.state.target.y, 210, 60)) {
-      this.state.target = g.room.randomFloorPoint(70);
+      this.state.target = actionRoom(g, this.state).randomFloorPoint(70);
     }
     if (this.elapsed > 9) this.finished = true;
   },
@@ -83,9 +100,10 @@ export const BubbleParty = {
   weight: 9,
   maxDur: 11,
   start(g) {
+    const room = captureRobotRoom(g, this.state);
     this.state.bubbles = [];
     this.state.emitT = 0;
-    this.state.target = g.room.randomFloorPoint(70);
+    this.state.target = room.randomFloorPoint(70);
     g.robot.setExpr('happy', 10);
     g.sound.happyBeeps(3);
   },
@@ -108,7 +126,9 @@ export const BubbleParty = {
         });
         if (chance(0.3)) g.sound.pop();
       }
-      if (r.driveTo(st.target.x, st.target.y, 120, 60)) st.target = g.room.randomFloorPoint(70);
+      if (r.driveTo(st.target.x, st.target.y, 120, 60)) {
+        st.target = actionRoom(g, st).randomFloorPoint(70);
+      }
     } else {
       r.targetSpeed = 0;
     }
@@ -140,6 +160,7 @@ export const BubbleParty = {
   },
   onTap(g, x, y) {
     const st = this.state;
+    if (st.roomId !== (g.house?.activeRoomId ?? g.room?.id)) return false;
     for (let i = st.bubbles.length - 1; i >= 0; i--) {
       const b = st.bubbles[i];
       if (dist(x, y, b.x, b.y) < b.size + 26) {
@@ -299,6 +320,7 @@ export const HoverMode = {
   maxDur: 12,
   canRun: (g) => g.robot.battery > 0.3,
   start(g) {
+    captureRobotRoom(g, this.state);
     this.state.phase = 'up';
     this.state.angle = 0;
     this.state.center = { x: g.robot.x, y: g.robot.y };
@@ -346,7 +368,7 @@ export const HoverMode = {
         r.z = 100 + Math.sin(this.elapsed * 3) * 12;
         if (this.elapsed > 8.5) {
           st.phase = 'land';
-          st.landing = g.room.randomFloorPoint(75);
+          st.landing = actionRoom(g, st).randomFloorPoint(75);
         }
         break;
       }
@@ -366,7 +388,7 @@ export const HoverMode = {
     }
   },
   end(g) {
-    g.robot.z = 0;
+    settleRobotOnOpenFloor(g);
   },
 };
 
@@ -377,7 +399,8 @@ export const UnderCouch = {
   maxDur: 16,
   canRun: (g) => !!roomFurniture(g, 'couch') && !g.robot.isRoomTraveling?.(),
   start(g) {
-    const couch = roomFurniture(g, 'couch');
+    const room = captureRobotRoom(g, this.state);
+    const couch = roomFurniture(g, 'couch', room);
     if (!couch) {
       this.finished = true;
       return;
@@ -386,7 +409,6 @@ export const UnderCouch = {
     this.state.t = 0;
     this.state.rattleT = 0;
     this.state.couch = couch;
-    this.state.roomId = g.robot.roomId ?? g.room?.id ?? 'living';
     g.robot.setExpr('determined', 4);
     g.sound.ackBeep();
   },
@@ -449,7 +471,8 @@ export const UnderCouch = {
           g.particles.dustPuff(r.x, r.y, 14, undefined, st.roomId);
           for (let i = 0; i < 2; i++) {
             const a = rand(-Math.PI * 0.8, -Math.PI * 0.2);
-            g.dirt.spawn('dustbunny', r.x + Math.cos(a) * rand(80, 150), Math.max(g.room.bounds.minY, r.y + Math.sin(a) * rand(60, 120)), {
+            const room = actionRoom(g, st);
+            g.dirt.spawn('dustbunny', r.x + Math.cos(a) * rand(80, 150), Math.max(room.bounds.minY, r.y + Math.sin(a) * rand(60, 120)), {
               drop: 30,
               roomId: st.roomId,
             });
@@ -474,6 +497,7 @@ export const UnderCouch = {
   },
   end(g) {
     g.robot.allowUnderCouch = false;
+    settleRobotOnOpenFloor(g);
   },
 };
 
@@ -483,6 +507,7 @@ export const Sneeze = {
   weight: 6,
   maxDur: 6,
   start(g) {
+    captureRobotRoom(g, this.state);
     this.state.phase = 'inhale';
     this.state.t = 0;
     g.sound.sneezeInhale(1.4);
@@ -532,10 +557,16 @@ export const Sneeze = {
           });
         }
         // sneezed-out crumbs to re-vacuum!
+        const room = actionRoom(g, st);
         for (let i = 0; i < 3; i++) {
           const px = r.x + fx * rand(130, 300) + rand(-70, 70);
-          const py = clamp(r.y + fy * rand(130, 300) + rand(-70, 70), g.room.bounds.minY, g.room.bounds.maxY);
-          if (g.room.isFree(px, py, 30)) g.dirt.spawn(pick(['crumbs', 'dustbunny']), px, py, { drop: 0 });
+          const py = clamp(r.y + fy * rand(130, 300) + rand(-70, 70), room.bounds.minY, room.bounds.maxY);
+          if (room.isFree(px, py, 30)) {
+            g.dirt.spawn(pick(['crumbs', 'dustbunny']), px, py, {
+              drop: 0,
+              roomId: st.roomId,
+            });
+          }
         }
         r.speed = -260; // recoil!
         r.setExpr('dizzy', 1.6);
@@ -547,6 +578,9 @@ export const Sneeze = {
         this.finished = true;
       }
     }
+  },
+  end(g) {
+    g.robot.spinExtra = 0;
   },
 };
 

@@ -204,9 +204,13 @@ test('player sprinkles and rolling toys cannot enter beneath the minimap', () =>
   const safeX = toy.x;
   game.dirt.update(0.1);
 
-  assert.equal(toy.x, safeX, 'toy must return to its last safe point');
+  assert.ok(toy.x <= safeX, 'toy must stay on the reachable side of the card');
   assert.ok(toy.vx < 0, 'toy must bounce away from the card');
-  assert.equal(game.room.isHudFree(toy.x, toy.y, 24), true);
+  assert.equal(
+    game.room.isHudFree(toy.x, toy.y, game.dirt.pickupClearance(toy)),
+    true,
+    'toy must retain enough clearance for the robot to pick it up',
+  );
 });
 
 test('a compact resize relocates persistent actors and floor mess from the raised card', () => {

@@ -1,6 +1,6 @@
-// Trips back to the dock for the mop gear: swapping pads on/off (ModeSwitch),
-// washing dirty pads (WashTrip), and the forced mop-the-mess emergency
-// (MopMode). All lean on the shared dockManeuverStep back-in maneuver.
+// Dock trips swap pads on/off (ModeSwitch) and wash dirty pads (WashTrip).
+// MopMode is the separate in-room route controller for already-equipped wet
+// cleaning; incidents themselves never request a pad installation.
 import { clamp } from '../core/math.js';
 import { dockManeuverStep, roomTravelStep } from './helpers.js';
 
@@ -152,6 +152,16 @@ function latestPadNeed(g) {
   return !!g.modeNeedsPads();
 }
 
+function wetCleaningEnabled(g) {
+  if (typeof g.canWetClean === 'function') return !!g.canWetClean();
+  const selectedForMop = typeof g.modeNeedsPads === 'function' ? g.modeNeedsPads() : true;
+  return selectedForMop && !!g.robot.mopMode;
+}
+
+function wetCleanupCanStart(g) {
+  return wetCleaningEnabled(g) && (g.robot.smearT ?? 0) <= 0;
+}
+
 function returnToDockForLatestMode(st) {
   st.phase = 'toDock';
   st.dockPhase = 'go';
@@ -203,6 +213,7 @@ export const ModeSwitch = {
   name: 'modeSwitch',
   weight: 0,
   canRun: () => false,
+  blocksWetCleanup: true,
   maxDur: 60,
   start(g) {
     const r = g.robot;
@@ -286,6 +297,7 @@ export const WashTrip = {
   name: 'washTrip',
   weight: 0,
   canRun: () => false,
+  blocksWetCleanup: true,
   maxDur: 60,
   start(g) {
     const r = g.robot;
@@ -385,17 +397,22 @@ export const WashTrip = {
   },
 };
 
-// ---------------------------------------------- mop emergency (poopocalypse)
-// Never picked randomly — the game FORCES it once the robot realizes what it
-// has been driving through. Installs pads if needed and mops the mess; the
-// wash trip and any pad removal follow on their own via the mode watchdogs.
+// ---------------------------------------------- directed wet-floor cleanup
+// Never picked randomly. The game starts it only when the selected mode already
+// has pads installed, so an incident can guide normal in-room mopping but can
+// never make a vacuum-only robot fetch different equipment.
 export const MopMode = {
   name: 'mopMode',
   weight: 0,
   canRun: () => false,
+  canForce: wetCleanupCanStart,
   maxDur: 90,
   start(g) {
     const r = g.robot;
+    if (!wetCleanupCanStart(g)) {
+      this.finished = true;
+      return;
+    }
     const currentRoomId = r.roomId ?? g.room?.id ?? 'living';
     const currentHasIncident = g.smears.hasIn?.(currentRoomId) ||
       g.dirt.hasIn?.(currentRoomId, (d) => d.type === 'poop');
@@ -405,83 +422,33 @@ export const MopMode = {
     const incidentRoomId = requestedIncidentRoomId ??
       (currentHasIncident ? currentRoomId : firstIncident?.roomId ?? currentRoomId);
     this.state = {
-      phase: 'notice', t: 0, dockPhase: null, beepT: 0, success: false,
+      phase: 'returnToIncident', t: 0, success: false,
       incidentRoomId,
     };
     clearMopRoute(this.state);
     r.targetSpeed = 0;
-    r.actionDockOk = true;
-    r.setExpr('dizzy', 2.2);
-    g.sound.alarm();
-    g.shake(3);
+    r.actionDockOk = false;
+    r.setExpr('determined', 4);
   },
   update(g, dt) {
     const r = g.robot;
     const st = this.state;
+    if (!wetCleaningEnabled(g)) {
+      // A mode tap can arrive after this action has taken ownership of a
+      // doorway trip. Stop all wet work immediately, but keep advancing that
+      // already-committed crossing until House completes its atomic handoff.
+      // Releasing control only after arrival leaves the normal mode watchdog
+      // free to start the requested equipment trip on the next check.
+      const travel = r.roomTravel;
+      if (travel?.owner === 'controlled' &&
+          !r.travelToRoomStep?.(travel.targetRoomId, dt)) {
+        return;
+      }
+      this.finished = true;
+      return;
+    }
     st.t += dt;
     switch (st.phase) {
-      case 'notice': {
-        // the horrified realization
-        r.targetSpeed = 0;
-        r.spinExtra = Math.sin(st.t * 24) * 0.05;
-        if (st.t > 0.5 && !st.saidUhOh) {
-          st.saidUhOh = true;
-          g.say('uh_oh', { force: true });
-        }
-        if (st.t > 1.7) {
-          r.spinExtra = 0;
-          st.t = 0;
-          if (r.mopMode) {
-            // pads already on — straight to work
-            r.setExpr('determined', 4);
-            st.phase = 'returnToIncident';
-          } else if (!g.dock.canMop()) {
-            // no water service — complain and leave the mess for the human
-            g.say(g.dock.needsClean() ? 'clean_empty' : 'dirty_full', { force: true });
-            g.sound.errorBuzz();
-            g.mopComplained = true;
-            r.setExpr('sleepy', 2.5);
-            st.phase = 'giveup';
-          } else {
-            g.say('go_mop_install');
-            r.setExpr('determined', 4);
-            st.phase = 'toDock';
-            st.dockPhase = 'go';
-          }
-        }
-        break;
-      }
-      case 'giveup': {
-        r.targetSpeed = 0;
-        if (st.t > 1.4) this.finished = true;
-        break;
-      }
-      case 'toDock': {
-        if (dockManeuverStep(g, st, dt)) {
-          st.phase = 'install';
-          st.t = 0;
-          g.cutaway.show('install');
-        }
-        break;
-      }
-      case 'install': {
-        // pads clip on at the dock (undercarriage cam shows the whole thing)
-        r.targetSpeed = 0;
-        if (g.cutaway.done) {
-          r.mopMode = true;
-          g.say('mop_installed');
-          st.phase = 'leaveDock';
-          st.t = 0;
-        }
-        break;
-      }
-      case 'leaveDock': {
-        if (r.driveTo(g.dock.approach.x, g.dock.approach.y + 30, 130, 26, { ignoreDock: true })) {
-          st.phase = 'returnToIncident';
-          st.t = 0;
-        }
-        break;
-      }
       case 'returnToIncident': {
         if (roomTravelStep(g, st.incidentRoomId, dt)) {
           clearMopRoute(st);
@@ -518,7 +485,6 @@ export const MopMode = {
   end(g) {
     const r = g.robot;
     r.actionDockOk = false;
-    r.spinExtra = 0;
     g.cutaway.dismiss();
     if (this.state?.success) {
       r.setExpr('happy', 2);

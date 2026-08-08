@@ -118,11 +118,17 @@ export class Dock {
             x: r.x + rand(6, r.w - 6),
             y: r.y + r.h * (1 - this.cleanWater) + 4,
             kind: 'bubble', size: rand(2.5, 5), life: rand(0.25, 0.5), vy: rand(-25, -8),
+            roomId: this.roomId,
           });
         }
         if (this.cleanWater >= 1 && a.t > 1.2) {
           this.anim = null;
-          g.particles.sparkle(this.cleanRect.x + this.cleanRect.w / 2, this.cleanRect.y, 6);
+          g.particles.sparkle(
+            this.cleanRect.x + this.cleanRect.w / 2,
+            this.cleanRect.y,
+            6,
+            this.roomId,
+          );
           g.sound.ackBeep();
         }
       } else if (a.type === 'drain') {
@@ -133,19 +139,36 @@ export class Dock {
             x: r.x + rand(8, r.w - 8), y: r.y + r.h + 6,
             kind: 'dot', color: 'rgba(138, 106, 74, 0.7)',
             size: rand(3, 5), life: rand(0.3, 0.5), vy: rand(50, 110),
+            roomId: this.roomId,
           });
         }
         if (this.dirtyWater <= 0 && a.t > 1.1) {
           this.anim = null;
-          g.particles.sparkle(this.dirtyRect.x + this.dirtyRect.w / 2, this.dirtyRect.y, 6);
+          g.particles.sparkle(
+            this.dirtyRect.x + this.dirtyRect.w / 2,
+            this.dirtyRect.y,
+            6,
+            this.roomId,
+          );
           g.sound.ackBeep();
         }
       } else if (a.type === 'bag') {
         if (a.t > 0.75 && !a.popped) {
           a.popped = true;
           g.sound.pop();
-          g.particles.dustPuff(this.bagRect.x + this.bagRect.w / 2, this.bagRect.y - 130, 8);
-          g.particles.sparkle(this.bagRect.x + this.bagRect.w / 2, this.bagRect.y - 110, 5);
+          g.particles.dustPuff(
+            this.bagRect.x + this.bagRect.w / 2,
+            this.bagRect.y - 130,
+            8,
+            undefined,
+            this.roomId,
+          );
+          g.particles.sparkle(
+            this.bagRect.x + this.bagRect.w / 2,
+            this.bagRect.y - 110,
+            5,
+            this.roomId,
+          );
         }
         if (a.t > 1.1) this.anim = null;
       }
@@ -169,6 +192,7 @@ export class Dock {
         life: 0.5,
         vx: (bx + rand(-14, 14) - robot.x) * 2.2,
         vy: (by + rand(-16, 16) - robot.y) * 2.2,
+        roomId: this.roomId,
       });
     }
   }

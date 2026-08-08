@@ -2,10 +2,15 @@
 // its light red, and cries for help until a toddler grabs, lifts, and places
 // it back on open floor. Game.js routes press-and-drag to grab/place/poke.
 import { TAU, rand, pick, clamp, lerp } from '../core/math.js';
+import { settleRobotOnOpenFloor } from './helpers.js';
 
-function roomFurniture(g, name) {
-  return g.room?.getFurniture?.(name) ??
-    g.room?.furniture?.find((item) => item.name === name) ?? null;
+function robotRoom(g, roomId = g.robot?.roomId) {
+  return g.house?.room?.(roomId) ?? g.room;
+}
+
+function roomFurniture(g, name, room = robotRoom(g)) {
+  return room?.getFurniture?.(name) ??
+    room?.furniture?.find((item) => item.name === name) ?? null;
 }
 
 // ------------------------------------------------- trapped! (rescue me) -----
@@ -21,8 +26,10 @@ export const Trapped = {
   canForce: (g) => !!roomFurniture(g, 'couch') || !!roomFurniture(g, 'table'),
   maxDur: 100000, // waits for its hero as long as it takes
   start(g) {
-    const couch = roomFurniture(g, 'couch');
-    const table = roomFurniture(g, 'table');
+    const roomId = g.robot.roomId ?? g.room?.id ?? 'living';
+    const room = robotRoom(g, roomId);
+    const couch = roomFurniture(g, 'couch', room);
+    const table = roomFurniture(g, 'table', room);
     const choices = [couch && 'couch', table && 'table'].filter(Boolean);
     if (!choices.length) {
       // The kitchen has an island, but no safe authored rescue pose yet.
@@ -30,7 +37,6 @@ export const Trapped = {
       return;
     }
     const kind = pick(choices);
-    const roomId = g.robot.roomId ?? g.room?.id ?? 'living';
     // Wedge spots measured from sprite pixels (couch paint's right edge at the
     // robot's row is world x≈560; the tabletop lip between the legs ends at
     // y≈575) so the robot ends up ~2/3 hidden with a grabbable bit poking out.
@@ -170,23 +176,24 @@ export const Trapped = {
     const r = g.robot;
     const st = this.state;
     if (st.phase !== 'held') return;
-    const b = g.room.bounds;
+    const room = robotRoom(g, st.roomId);
+    const b = room.bounds;
     const cx = clamp(x, b.minX, b.maxX);
     const cy = clamp(y, b.minY, b.maxY);
-    let spot = g.room.isFree(cx, cy, r.radius + 4) ? { x: cx, y: cy } : null;
+    let spot = room.isFree(cx, cy, r.radius + 4) ? { x: cx, y: cy } : null;
     for (let rr = 44; rr <= 280 && !spot; rr += 44) {
       for (let i = 0; i < 12; i++) {
         const a = (i / 12) * TAU + rr * 0.13;
         const sx = cx + Math.cos(a) * rr;
         const sy = cy + Math.sin(a) * rr;
         if (sx > b.minX && sx < b.maxX && sy > b.minY && sy < b.maxY &&
-            g.room.isFree(sx, sy, r.radius + 4)) {
+            room.isFree(sx, sy, r.radius + 4)) {
           spot = { x: sx, y: sy };
           break;
         }
       }
     }
-    if (!spot) spot = g.room.randomFloorPoint(r.radius + 6);
+    if (!spot) spot = room.randomFloorPoint(r.radius + 6);
     r.x = spot.x;
     r.y = spot.y;
     r.allowUnderCouch = false;
@@ -254,5 +261,6 @@ export const Trapped = {
     r.trapped = false;
     r.allowUnderCouch = false;
     r.spinExtra = 0;
+    settleRobotOnOpenFloor(g);
   },
 };

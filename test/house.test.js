@@ -117,11 +117,12 @@ test('both sides of the doorway use drivable approach and arrival anchors', () =
   }
 });
 
-test('a completed transition switches rooms and lands at the paired arrival anchor', () => {
+test('a completed transition moves the robot without replacing the selected room', () => {
   const house = new House(makeGame());
   const robot = { x: 0, y: 0, angle: 0, roomId: 'living' };
 
   for (const [fromId, toId] of [['living', 'kitchen'], ['kitchen', 'living']]) {
+    house.activate(fromId);
     const destination = house.portal(toId, fromId);
     const transition = house.beginTransition(toId, {
       fromRoomId: fromId,
@@ -134,18 +135,19 @@ test('a completed transition switches rooms and lands at the paired arrival anch
     assert.equal(house.activeRoomId, fromId);
 
     house.updateTransition(0.02);
-    assert.equal(house.activeRoomId, toId);
+    assert.equal(house.activeRoomId, fromId);
+    assert.equal(robot.roomId, toId, 'the robot crosses physically at the midpoint');
 
     house.updateTransition(0.49);
     assert.equal(house.transition, null);
-    assert.equal(house.activeRoomId, toId);
+    assert.equal(house.activeRoomId, fromId);
     assert.equal(robot.roomId, toId);
     assert.equal(robot.x, destination.arrival.x);
     assert.equal(robot.y, destination.arrival.y);
   }
 });
 
-test('transition pan covers the canvas and the minimap clears a compact landscape safe edge', () => {
+test('a robot transition keeps the chosen camera frame stable', () => {
   const house = new House(makeGame());
   const robot = { x: 0, y: 0, angle: 0, roomId: 'living' };
   house.beginTransition('kitchen', {
@@ -154,13 +156,32 @@ test('transition pan covers the canvas and the minimap clears a compact landscap
     robot,
   });
 
-  for (const dt of [0.49, 0.02]) {
+  house.updateTransition(0.49);
+  house.activate('kitchen');
+  for (const dt of [0, 0.02, 0.49]) {
     house.updateTransition(dt);
     const frame = house.transitionFrame();
-    const scaledMargin = WORLD_W * (frame.sceneScale - 1) / 2;
-    assert.ok(frame.offsetX - scaledMargin <= 0, 'panned scene must cover the left edge');
-    assert.ok(frame.offsetX + WORLD_W + scaledMargin >= WORLD_W, 'panned scene must cover the right edge');
+    assert.equal(house.activeRoomId, 'kitchen');
+    assert.equal(frame.roomId, 'kitchen');
+    assert.equal(frame.room, house.room('kitchen'));
+    assert.equal(frame.offsetX, 0);
+    assert.equal(frame.sceneScale, 1);
+    assert.equal(frame.alpha, 1);
+    assert.equal(frame.overlayAlpha, 0);
   }
+
+  const returnTrip = house.beginTransition('living', {
+    fromRoomId: 'kitchen',
+    duration: 1,
+    robot,
+  });
+  assert.ok(returnTrip);
+  house.activate('living');
+  house.updateTransition(0.6);
+  house.activate('kitchen');
+  house.cancelTransition();
+  assert.equal(house.activeRoomId, 'kitchen', 'cancelling travel also preserves the view');
+  assert.equal(robot.roomId, 'kitchen', 'cancelling restores only the physical robot');
 
   const compactScale = Math.min(844 / WORLD_W, 390 / WORLD_H);
   const compactOffset = minimapVerticalOffset(compactScale, 0, 390);

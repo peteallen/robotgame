@@ -15,6 +15,38 @@ export function roomTravelStep(g, targetRoomId, dt) {
   return r.travelToRoomStep?.(targetRoomId, dt) ?? false;
 }
 
+// Flying and furniture stunts are allowed to put Robo somewhere the ordinary
+// driving collision rules reject. If one of those actions is interrupted, put
+// him down in his physical room before normal navigation resumes. The viewed
+// room may be different, so never use `g.room` unless no room registry exists.
+export function settleRobotOnOpenFloor(g) {
+  const r = g.robot;
+  const room = r.roomFor?.(r.roomId) ??
+    g.house?.room?.(r.roomId) ??
+    g.room;
+  const clearance = (r.radius ?? 62) + 4;
+
+  r.z = 0;
+  r.vz = 0;
+  r.speed = 0;
+  r.targetSpeed = 0;
+
+  if (!room?.isFree || room.isFree(r.x, r.y, clearance)) return;
+
+  const nearby = room.nearestFreePoint?.(r.x, r.y, clearance);
+  if (nearby && room.isFree(nearby.x, nearby.y, clearance)) {
+    r.x = nearby.x;
+    r.y = nearby.y;
+    return;
+  }
+
+  const fallback = room.randomFloorPoint?.(clearance);
+  if (fallback && room.isFree(fallback.x, fallback.y, clearance)) {
+    r.x = fallback.x;
+    r.y = fallback.y;
+  }
+}
+
 // back-in docking maneuver; returns true when parked
 export function dockManeuverStep(g, st, dt) {
   const r = g.robot;

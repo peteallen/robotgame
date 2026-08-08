@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { cleanVictoryReady, Game } from '../src/game/Game.js';
-import { MopMode } from '../src/game/actions/dockTrips.js';
+import { ActionRegistry } from '../src/game/actions/ActionRegistry.js';
+import { ModeSwitch, MopMode, WashTrip } from '../src/game/actions/dockTrips.js';
 import { Dock } from '../src/game/entities/Dock.js';
+import { DirtSystem } from '../src/game/entities/DirtSystem.js';
 import { Dog } from '../src/game/entities/Dog.js';
 import { MilkBottle } from '../src/game/entities/MilkBottle.js';
 import { Robot } from '../src/game/entities/Robot.js';
@@ -171,6 +173,232 @@ function runInstalledPadCleanup({ start, kind, spill, seconds = 30 }) {
   return Infinity;
 }
 
+function makeVacuumOnlyTrackingScenario(kind) {
+  const forcedActions = [];
+  let wipeCalls = 0;
+  const room = {
+    id: 'kitchen',
+    bounds: { minX: 100, maxX: 1580, minY: 245, maxY: 950 },
+    update: noop,
+    isFree: () => true,
+    collisionNormal: () => ({ nx: -1, ny: 0 }),
+  };
+  const game = {
+    _lastW: 1680,
+    _lastH: 1050,
+    time: 0,
+    dt: 1 / 60,
+    freezeBattery: true,
+    userMode: 'vac',
+    pendingMop: false,
+    pendingMopRoomId: null,
+    mopIncidentRoomId: null,
+    mopDirt: 0,
+    mopComplained: false,
+    roomDirty: false,
+    finalVacuumRoomId: null,
+    dim: 0,
+    dimTarget: 0,
+    shakeAmt: 0,
+    shakeCouch: 0,
+    hatTime: 0,
+    celebration: null,
+    sockFetchT: 999,
+    fateT: 999,
+    toyTidyT: 999,
+    dogChaseT: 999,
+    trapT: 999,
+    autoEventT: 999,
+    splash: { active: false, fading: false, update: noop },
+    room,
+    house: { activeRoomId: 'kitchen', room: () => room },
+    dock: {
+      x: 180,
+      parkY: 300,
+      roomId: 'kitchen',
+      update: noop,
+      anyAlert: () => false,
+      canMop: () => true,
+    },
+    actions: {
+      busy: false,
+      current: null,
+      update: noop,
+      force(name) {
+        forcedActions.push(name);
+        return true;
+      },
+      triggerByName: noop,
+    },
+    sound: new Proxy({ ready: false }, {
+      get: (target, key) => key in target ? target[key] : noop,
+    }),
+    particles: new Proxy({ update: noop }, { get: (target, key) => target[key] ?? noop }),
+    dirt: {
+      items: [],
+      update: noop,
+      trySuck: noop,
+      remove(item) {
+        const index = this.items.indexOf(item);
+        if (index >= 0) this.items.splice(index, 1);
+      },
+    },
+    dog: { roomId: 'living', state: 'sit', update: noop, pooping: () => false },
+    ambience: { update: noop },
+    milkBottle: { update: noop },
+    cutaway: { update: noop },
+    hud: { update: noop },
+    syncRoomInteractionState: noop,
+    updateMatJam: noop,
+    shake: noop,
+    modeNeedsPads: Game.prototype.modeNeedsPads,
+    modeHasVac: Game.prototype.modeHasVac,
+    canWetClean: Game.prototype.canWetClean,
+    messActive: Game.prototype.messActive,
+  };
+  game.smears = new Smears(game);
+  const wipeAt = game.smears.wipeAt.bind(game.smears);
+  game.smears.wipeAt = (...args) => {
+    wipeCalls++;
+    return wipeAt(...args);
+  };
+  game.robot = new Robot(game);
+  Object.assign(game.robot, {
+    roomId: 'kitchen',
+    x: 300,
+    y: 600,
+    heading: 0,
+    state: 'clean',
+    controlled: true,
+    speed: 120,
+    targetSpeed: 120,
+    battery: 1,
+    bin: 0,
+    mopMode: false,
+  });
+
+  if (kind === 'vomit') {
+    game.smears.spillVomit(game.robot.x, game.robot.y, { roomId: 'kitchen' });
+  } else {
+    game.smears.splat(game.robot.x, game.robot.y, { roomId: 'kitchen', kind: 'poop' });
+  }
+
+  return {
+    game,
+    forcedActions,
+    wipeCalls: () => wipeCalls,
+  };
+}
+
+function updateGameFrames(game, frames, dt = 1 / 60) {
+  for (let frame = 0; frame < frames; frame++) {
+    Game.prototype.update.call(game, dt);
+  }
+}
+
+function makeWetModeSelectionScenario() {
+  const actionStarts = [];
+  const cutaways = [];
+  const game = {
+    _lastW: 1680,
+    _lastH: 1050,
+    scale: 1,
+    offX: 0,
+    offY: 0,
+    canvas: { clientHeight: 1050, height: 1050 },
+    time: 0,
+    dt: 1 / 60,
+    freezeBattery: true,
+    userMode: 'vac',
+    pendingMop: false,
+    pendingMopRoomId: null,
+    mopIncidentRoomId: null,
+    mopDirt: 0,
+    mopComplained: false,
+    roomDirty: false,
+    finalVacuumRoomId: null,
+    dim: 0,
+    dimTarget: 0,
+    shakeAmt: 0,
+    shakeCouch: 0,
+    hatTime: 0,
+    celebration: null,
+    sockFetchT: 999,
+    fateT: 999,
+    toyTidyT: 999,
+    dogChaseT: 999,
+    trapT: 999,
+    autoEventT: 999,
+    splash: { active: false, fading: false, update: noop },
+    sound: new Proxy({ ready: false }, {
+      get: (target, key) => key in target ? target[key] : noop,
+    }),
+    sfx: { play: () => true },
+    particles: new Proxy({ update: noop }, {
+      get: (target, key) => target[key] ?? noop,
+    }),
+    dog: {
+      roomId: 'living', state: 'sit', update: noop, pooping: () => false, startle: noop,
+    },
+    ambience: { update: noop },
+    milkBottle: { update: noop },
+    cutaway: {
+      done: false,
+      show(kind) {
+        cutaways.push(kind);
+        this.done = true;
+      },
+      update: noop,
+      dismiss() {
+        this.done = false;
+      },
+    },
+    hud: { update: noop },
+    syncRoomInteractionState: noop,
+    updateMatJam: noop,
+    say: noop,
+    shake: noop,
+    onPickup: noop,
+    modeNeedsPads: Game.prototype.modeNeedsPads,
+    modeHasVac: Game.prototype.modeHasVac,
+    canWetClean: Game.prototype.canWetClean,
+    messActive: Game.prototype.messActive,
+    requestMode: Game.prototype.requestMode,
+  };
+  game.dock = new Dock(game);
+  game.house = new House(game);
+  game.smears = new Smears(game);
+  game.dirt = new DirtSystem(game);
+  game.robot = new Robot(game);
+  game.actions = new ActionRegistry(game);
+  game.actions.register(ModeSwitch);
+  game.actions.register(MopMode);
+
+  const begin = game.actions.begin.bind(game.actions);
+  game.actions.begin = (action) => {
+    const started = begin(action);
+    if (started) actionStarts.push({ name: action.name, pads: game.robot.mopMode });
+    return started;
+  };
+
+  Object.assign(game.robot, {
+    roomId: 'living',
+    x: game.dock.approach.x,
+    y: game.dock.approach.y,
+    heading: Math.PI / 2,
+    state: 'clean',
+    controlled: false,
+    pauseT: 999,
+    speed: 0,
+    targetSpeed: 0,
+    mopMode: false,
+    battery: 1,
+    bin: 0,
+  });
+  game.smears.spillVomit(850, 790, { roomId: 'living' });
+  return { game, actionStarts, cutaways };
+}
+
 test('dynamic milk and decal vomit are room-owned mop puddles that re-arm victory', () => {
   const game = makeSmearGame();
   const smears = new Smears(game);
@@ -310,6 +538,132 @@ test('milk pours first, conserves volume, then spreads slowly to a bounded footp
   assert.ok(settled.cells < 110, `settled cells ${settled.cells}`);
   assert.ok(Math.abs(field.mass - 9) < 0.00002, `mass ${field.mass}`);
 });
+
+test('padless wheel tracks stretch milk while conserving its volume', () => {
+  const room = {
+    bounds: { minX: 100, maxX: 1580, minY: 245, maxY: 950 },
+    isFree: () => true,
+  };
+  const game = { robot: { radius: 62 }, house: { room: () => room } };
+  const field = new MilkField(game, 1200, 575, {
+    roomId: 'kitchen',
+    totalVolume: 9,
+    duration: 0,
+  });
+  for (let frame = 0; frame < 240; frame++) field.update(1 / 30);
+
+  const initialCells = field.occupiedCellCount();
+  const initialMass = field.height.reduce((sum, value) => sum + value, 0);
+  const source = field.cellPoint(field.sourceIndex);
+  const dragLine = (dx, dy) => {
+    let from = source;
+    for (let step = 1; step <= 5; step++) {
+      const to = { x: source.x + dx * step, y: source.y + dy * step };
+      assert.ok(field.transferAlong(from.x, from.y, to.x, to.y, 0.12) > 0);
+      from = to;
+    }
+  };
+
+  dragLine(0, 48);
+  const firstPassCells = field.occupiedCellCount();
+  dragLine(48, 0);
+  const secondPassCells = field.occupiedCellCount();
+  const finalMass = field.height.reduce((sum, value) => sum + value, 0);
+
+  assert.ok(firstPassCells > initialCells, 'the first crossing should extend the wet footprint');
+  assert.ok(secondPassCells > firstPassCells, 'another crossing should make the problem worse');
+  assert.ok(Math.abs(finalMass - initialMass) < 0.000002,
+    `tracked milk changed mass from ${initialMass} to ${finalMass}`);
+});
+
+test('repeated milk tracking still leaves targets that can clean every last trace', () => {
+  const room = {
+    bounds: { minX: 100, maxX: 1580, minY: 245, maxY: 950 },
+    isFree: () => true,
+  };
+  const game = { robot: { radius: 62 }, house: { room: () => room } };
+  const field = new MilkField(game, 800, 550, {
+    roomId: 'kitchen',
+    totalVolume: 9,
+    duration: 0,
+  });
+  for (let frame = 0; frame < 240; frame++) field.update(1 / 30);
+
+  for (let pass = 0; pass < 10; pass++) {
+    let from = field.cellPoint(field.sourceIndex);
+    const angle = pass * 2.399;
+    for (let step = 1; step <= 14; step++) {
+      const to = {
+        x: from.x + Math.cos(angle) * 24,
+        y: from.y + Math.sin(angle) * 24,
+      };
+      field.transferAlong(from.x, from.y, to.x, to.y, 0.08);
+      field.update(1 / 30);
+      from = to;
+    }
+    for (let frame = 0; frame < 96; frame++) field.update(1 / 30);
+  }
+
+  let wipes = 0;
+  while (field.active && wipes < 200) {
+    const target = field.mopTargets()[0];
+    assert.ok(target, `active milk lost its cleanup target after ${wipes} wipes`);
+    field.wipeAt(target.x, target.y, 64);
+    field.update(1 / 30);
+    wipes++;
+  }
+
+  assert.equal(field.active, false, 'all tracked milk should be cleanable');
+  assert.equal(field.mass, 0);
+  assert.ok(wipes < 200, 'cleanup should finish without cycling forever');
+});
+
+for (const kind of ['poop', 'vomit']) {
+  test(`vacuum-only contact progressively tracks ${kind}, then stops for a cooldown`, () => {
+    const previousWindow = globalThis.window;
+    globalThis.window = { innerWidth: 1680, innerHeight: 1050 };
+    try {
+      const scenario = makeVacuumOnlyTrackingScenario(kind);
+      const { game, forcedActions } = scenario;
+      const initialCount = game.smears.count;
+
+      updateGameFrames(game, 1);
+      assert.equal(game.robot.smearKind, kind, 'floor contact should load the matching mess');
+      assert.ok(game.robot.smearT > 0, 'contact should start a finite tracking burst');
+
+      updateGameFrames(game, 90);
+      const firstPassCount = game.smears.count;
+      assert.ok(firstPassCount > initialCount, 'moving dirty wheels should add matching tracks');
+
+      updateGameFrames(game, 180);
+      const completedCount = game.smears.count;
+      assert.ok(completedCount > firstPassCount, 'the mess should worsen as the burst continues');
+      assert.ok(game.smears.items.slice(initialCount).every((item) => item.kind === kind));
+      assert.ok(game.robot.smearT <= 0, 'wheel tracking must end after its bounded duration');
+      assert.ok(game.robot.wetTrackCooldown > 0, 'the finished burst should arm a cooldown');
+      assert.equal(
+        game.smears.wetContactAt(
+          game.robot.x,
+          game.robot.y,
+          game.robot.radius * 0.45,
+          game.robot.roomId,
+        )?.kind,
+        kind,
+        'Robo should still be touching its newest track when the cooldown starts',
+      );
+
+      updateGameFrames(game, 60);
+      assert.equal(game.robot.smearT <= 0, true, 'fresh tracks cannot immediately retrigger');
+      assert.equal(game.smears.count, completedCount, 'the cooldown keeps the burst finite');
+      assert.equal(game.robot.mopMode, false, 'vacuum-only contact cannot install pads');
+      assert.equal(scenario.wipeCalls(), 0, 'vacuum-only travel cannot mop the mess');
+      assert.deepEqual(forcedActions, [], 'wet contact cannot request a dock or mop action');
+    } finally {
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+    }
+  });
+}
 
 test('the settled kitchen milk contour remains visible beside the wall-side trash can', () => {
   const game = { robot: { radius: 62 } };
@@ -627,6 +981,255 @@ test('cross-room puddles remain mop targets and block whole-house victory', () =
   game.smears.wipeAt(1200, 560, 180, 'kitchen');
   assert.equal(game.smears.count, 0);
   assert.equal(cleanVictoryReady(game, game.robot), true);
+});
+
+test('vacuum-only waits for Theo to select a mop mode before installing pads and cleaning', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1680, innerHeight: 1050 };
+  try {
+    for (const selectedMode of ['mop', 'both']) {
+      const { game, actionStarts, cutaways } = makeWetModeSelectionScenario();
+      const spillCount = game.smears.count;
+
+      updateGameFrames(game, 120);
+      assert.deepEqual(actionStarts, [], `${selectedMode}: the incident cannot start an action`);
+      assert.equal(game.actions.current, null);
+      assert.equal(game.robot.mopMode, false, `${selectedMode}: vacuum-only cannot install pads`);
+      assert.equal(game.smears.count, spillCount, `${selectedMode}: the wet mess must persist`);
+      assert.equal(game.pendingMop, true, `${selectedMode}: cleanup must remain queued`);
+
+      game.requestMode(selectedMode);
+      for (let frame = 0; frame < 45 / game.dt && game.smears.count > 0; frame++) {
+        Game.prototype.update.call(game, game.dt);
+      }
+
+      assert.deepEqual(actionStarts, [
+        { name: 'modeSwitch', pads: false },
+        { name: 'mopMode', pads: true },
+      ], `${selectedMode}: the normal pad service must finish before directed cleanup`);
+      assert.deepEqual(cutaways, ['install']);
+      assert.equal(game.robot.mopMode, true);
+      assert.equal(game.pendingMop, false);
+      assert.equal(game.smears.count, 0, `${selectedMode}: directed mopping must remove the spill`);
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test('wet cleanup cannot override the selected mode or install pads', () => {
+  const policy = (selectedPads, installedPads) => MopMode.canForce({
+    robot: { mopMode: installedPads },
+    modeNeedsPads: () => selectedPads,
+  });
+  assert.equal(policy(false, false), false, 'vacuum-only stays vacuum-only');
+  assert.equal(policy(false, true), false, 'selecting vacuum stops wet cleanup immediately');
+  assert.equal(policy(true, false), false, 'an incident cannot install missing pads');
+  assert.equal(policy(true, true), true, 'an equipped mop mode can clean in place');
+
+  const robot = {
+    roomId: 'kitchen',
+    mopMode: true,
+    targetSpeed: 0,
+    actionDockOk: false,
+    setExpr: noop,
+  };
+  const game = {
+    robot,
+    modeNeedsPads: () => true,
+    smears: { hasIn: () => true, findAny: () => ({ roomId: 'kitchen' }) },
+    dirt: { hasIn: () => false, findAny: () => null },
+    house: { room: () => ({}) },
+  };
+  const action = Object.create(MopMode);
+  action.finished = false;
+  action.state = {};
+  action.start(game);
+
+  assert.equal(action.state.phase, 'returnToIncident');
+  assert.equal(robot.mopMode, true);
+  assert.equal(robot.actionDockOk, false);
+});
+
+test('selecting vacuum during cross-room wet cleanup finishes the doorway before mode service', () => {
+  let selectedMode = 'both';
+  const game = {
+    time: 0,
+    dt: 1 / 60,
+    freezeBattery: true,
+    mopDirt: 0,
+    pendingMop: false,
+    pendingMopRoomId: 'kitchen',
+    mopIncidentRoomId: null,
+    sound: new Proxy({ ready: false }, {
+      get: (target, key) => key in target ? target[key] : noop,
+    }),
+    sfx: { play: () => true },
+    particles: new Proxy({}, { get: () => noop }),
+    dirt: {
+      items: [],
+      findAny: () => null,
+      hasIn: () => false,
+      trySuck: noop,
+    },
+    dog: {
+      roomId: 'living', state: 'sit', pooping: () => false, startle: noop,
+    },
+    cutaway: { dismiss: noop },
+    modeNeedsPads: () => selectedMode !== 'vac',
+    modeHasVac: () => selectedMode !== 'mop',
+    canWetClean: Game.prototype.canWetClean,
+    say: noop,
+    shake: noop,
+    onPickup: noop,
+  };
+  game.dock = new Dock(game);
+  game.house = new House(game);
+  game.smears = new Smears(game);
+  game.robot = new Robot(game);
+  game.actions = new ActionRegistry(game);
+  game.actions.register(MopMode);
+  game.actions.register(ModeSwitch);
+  game.house.activate('living');
+  Object.assign(game.robot, {
+    roomId: 'living',
+    x: 1100,
+    y: 700,
+    heading: 0,
+    state: 'clean',
+    mopMode: true,
+    battery: 1,
+    bin: 0,
+  });
+  game.smears.spillVomit(700, 700, { roomId: 'kitchen' });
+
+  assert.equal(game.actions.force('mopMode'), true);
+  let sawCrossing = false;
+  for (let frame = 0; frame < 20 / game.dt; frame++) {
+    game.time += game.dt;
+    game.robot.update(game.dt);
+    game.actions.update(game.dt);
+    if (game.robot.roomTravel?.phase === 'cross') {
+      sawCrossing = true;
+      break;
+    }
+  }
+  assert.equal(sawCrossing, true, 'wet cleanup should own a real doorway crossing');
+
+  selectedMode = 'vac';
+  for (let frame = 0; frame < 3 / game.dt && game.actions.busy; frame++) {
+    game.time += game.dt;
+    game.robot.update(game.dt);
+    game.actions.update(game.dt);
+  }
+
+  assert.equal(game.robot.roomId, 'kitchen', 'the in-flight doorway handoff must finish');
+  assert.equal(game.robot.roomTravel, null, 'the controlled trip cannot be orphaned');
+  assert.equal(game.actions.busy, false, 'wet cleanup should release control on arrival');
+  assert.equal(game.robot.controlled, false);
+  assert.equal(game.robot.mopMode, true, 'mode selection does not silently change equipment');
+  assert.equal(game.robot.state, 'clean', 'the mode-switch watchdog is unblocked');
+
+  assert.equal(game.actions.force('modeSwitch'), true);
+  assert.equal(game.actions.current?.name, 'modeSwitch');
+});
+
+test('wet cleanup waits for tracking and cannot preempt pad-service dock trips', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1680, innerHeight: 1050 };
+  try {
+    for (const dockTrip of [ModeSwitch, WashTrip]) {
+      const scenario = makeVacuumOnlyTrackingScenario('vomit');
+      const { game, forcedActions } = scenario;
+      game.userMode = 'both';
+      game.robot.mopMode = true;
+      game.robot.speed = 0;
+      game.robot.targetSpeed = 0;
+      game.robot.state = 'action';
+      game.actions.busy = true;
+      game.actions.current = dockTrip;
+
+      updateGameFrames(game, 1);
+      assert.equal(dockTrip.blocksWetCleanup, true);
+      assert.deepEqual(
+        forcedActions,
+        [],
+        `${dockTrip.name} must finish before directed wet cleanup starts`,
+      );
+    }
+
+    const automaticWash = makeVacuumOnlyTrackingScenario('vomit');
+    automaticWash.game.userMode = 'both';
+    automaticWash.game.robot.mopMode = true;
+    automaticWash.game.robot.controlled = false;
+    automaticWash.game.robot.speed = 0;
+    automaticWash.game.robot.targetSpeed = 0;
+    automaticWash.game.robot.state = 'washpads';
+
+    updateGameFrames(automaticWash.game, 1);
+    assert.deepEqual(
+      automaticWash.forcedActions,
+      [],
+      'directed wet cleanup cannot interrupt automatic pad washing at the dock',
+    );
+    assert.equal(automaticWash.game.robot.state, 'washpads');
+
+    const scenario = makeVacuumOnlyTrackingScenario('poop');
+    const { game, forcedActions } = scenario;
+    game.userMode = 'both';
+    game.roomDirty = false;
+    game.robot.mopMode = true;
+    game.robot.smearT = 2;
+    game.robot.speed = 0;
+    game.robot.targetSpeed = 0;
+    game.robot.state = 'clean';
+
+    updateGameFrames(game, 1);
+    assert.deepEqual(forcedActions, [], 'directed cleanup must wait for dirty wheels to stop');
+    assert.equal(MopMode.canForce(game), false);
+
+    game.robot.smearT = 0;
+    updateGameFrames(game, 1);
+    assert.deepEqual(forcedActions, ['mopMode'], 'cleanup should start after tracking finishes');
+    assert.equal(MopMode.canForce(game), true);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test('battery and summon returns suspend passive pad wiping immediately', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1680, innerHeight: 1050 };
+  try {
+    for (const returnState of [
+      { battery: 0.16, state: 'action', stayDocked: false },
+      { battery: 1, state: 'godock', stayDocked: true },
+    ]) {
+      const scenario = makeVacuumOnlyTrackingScenario('vomit');
+      const { game } = scenario;
+      game.userMode = 'mop';
+      Object.assign(game.robot, {
+        ...returnState,
+        mopMode: true,
+        controlled: true,
+        smearT: 0,
+      });
+      game.actions.busy = true;
+      game.actions.current = { name: 'mopMode' };
+      const wetBefore = game.smears.count;
+
+      updateGameFrames(game, 1);
+
+      assert.equal(game.smears.count, wetBefore);
+      assert.equal(scenario.wipeCalls(), 0);
+      assert.deepEqual(scenario.forcedActions, []);
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
 });
 
 test('installed pads route around kitchen furniture to clean milk and vomit', () => {

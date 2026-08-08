@@ -86,6 +86,28 @@ export class Smears {
     return this.fluids.find((field) => field.id === id) ?? null;
   }
 
+  wetContactAt(x, y, radius = 0, roomId = this.robotRoomId()) {
+    for (const field of this.fluids) {
+      if (field.roomId === roomId && field.active && field.touchesCircle(x, y, radius)) {
+        return { kind: field.kind, roomId, fieldId: field.id };
+      }
+    }
+    for (const item of this.items) {
+      if (item.roomId !== roomId) continue;
+      const reach = Math.max(0, radius) + Math.max(item.len ?? 0, item.w ?? 0) * 0.45;
+      if ((item.x - x) ** 2 + (item.y - y) ** 2 <= reach * reach) {
+        return { kind: item.kind ?? 'poop', roomId };
+      }
+    }
+    return null;
+  }
+
+  transferMilk(fieldId, from, to, cap = 0.08) {
+    const field = this.milkField(fieldId);
+    if (!field || !from || !to) return 0;
+    return field.transferAlong(from.x, from.y, to.x, to.y, cap);
+  }
+
   makeRoom(roomId) {
     let i = this.items.findIndex((s) => s.roomId === roomId && !s.puddle);
     if (i < 0) i = this.items.findIndex((s) => s.roomId === roomId && !s.primary);

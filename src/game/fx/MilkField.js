@@ -112,6 +112,56 @@ export class MilkField {
     return row * this.cols + col;
   }
 
+  touchesCircle(x, y, radius = 0) {
+    const reach = Math.max(0, radius) + this.cellSize * 0.72;
+    const reachSq = reach * reach;
+    for (let index = 0; index < this.height.length; index++) {
+      if (this.height[index] <= WET_EPSILON) continue;
+      const point = this.cellPoint(index);
+      const dx = point.x - x;
+      const dy = point.y - y;
+      if (dx * dx + dy * dy <= reachSq) return true;
+    }
+    return false;
+  }
+
+  nearestWetIndex(x, y, radius = this.cellSize * 2) {
+    const radiusSq = radius * radius;
+    let best = -1;
+    let bestDistance = Infinity;
+    for (let index = 0; index < this.height.length; index++) {
+      if (this.height[index] <= WET_EPSILON) continue;
+      const point = this.cellPoint(index);
+      const dx = point.x - x;
+      const dy = point.y - y;
+      const distance = dx * dx + dy * dy;
+      if (distance <= radiusSq && distance < bestDistance) {
+        best = index;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
+  // A padless wheel drags a fraction of the liquid from its previous contact
+  // point to its new one. Volume moves between grid cells instead of being
+  // created, so repeated crossings stretch the puddle without violating the
+  // fluid simulation's conservation guarantee.
+  transferAlong(fromX, fromY, toX, toY, cap = 0.08) {
+    if (!this.active || !(cap > 0)) return 0;
+    const source = this.nearestWetIndex(fromX, fromY);
+    const destination = this.nearestAllowedIndex(toX, toY);
+    if (source < 0 || destination < 0 || source === destination) return 0;
+    const available = this.height[source];
+    const amount = Math.min(cap, available * 0.58);
+    if (amount <= WET_EPSILON * 0.3) return 0;
+    this.height[source] = Math.max(0, available - amount);
+    this.height[destination] += amount;
+    this.settled = false;
+    this.markChanged();
+    return amount;
+  }
+
   rebuildAllowedMask(room = this.room()) {
     const robotRadius = (this.game?.robot?.radius ?? 62) + 8;
     const fluidRadius = Math.max(7, this.cellSize * 0.34);
@@ -358,6 +408,16 @@ export class MilkField {
     const wet = [];
     for (let index = 0; index < this.height.length; index++) {
       if (this.height[index] > WET_EPSILON) wet.push(index);
+    }
+    // Wheel transfers can divide a trace of milk among cells that are each
+    // below the visible-wet threshold while their combined mass still keeps
+    // the field active. Once no visible cell remains, expose those positive
+    // trace cells as work so directed mopping can finish instead of leaving an
+    // invisible spill that permanently blocks the all-clean celebration.
+    if (!wet.length && this.mass > CLEAN_EPSILON) {
+      for (let index = 0; index < this.height.length; index++) {
+        if (this.height[index] > 0) wet.push(index);
+      }
     }
     if (!wet.length && this.sourceActive && this.sourceIndex >= 0) wet.push(this.sourceIndex);
 

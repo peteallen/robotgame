@@ -3,9 +3,28 @@
 import { TAU, rand, pick, clamp, lerp, dist, angleTo, easeOutCubic } from '../core/math.js';
 import { drawArm, drawSockShape, drawToyShape, isTidyableToy } from './helpers.js';
 
-function roomFurniture(g, name) {
-  return g.room?.getFurniture?.(name) ??
-    g.room?.furniture?.find((item) => item.name === name) ?? null;
+function robotRoom(g, roomId = g.robot?.roomId) {
+  return g.house?.room?.(roomId) ?? g.room;
+}
+
+function roomFurniture(g, name, room = robotRoom(g)) {
+  return room?.getFurniture?.(name) ??
+    room?.furniture?.find((item) => item.name === name) ?? null;
+}
+
+function nearestItem(items, robot, predicate) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (const item of items) {
+    if (!predicate(item)) continue;
+    const distance = (item.x - robot.x) ** 2 + (item.y - robot.y) ** 2;
+    if (distance < bestDistance ||
+        (distance === bestDistance && (item.id ?? 0) < (best?.id ?? Infinity))) {
+      best = item;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 function basketTargets(room, basket) {
@@ -55,15 +74,18 @@ export const SockGrab = {
   canRun: (g) => !!roomFurniture(g, 'basket'),
   start(g) {
     const r = g.robot;
-    const basket = roomFurniture(g, 'basket');
+    const roomId = r.roomId ?? g.room?.id ?? 'living';
+    const room = robotRoom(g, roomId);
+    const basket = roomFurniture(g, 'basket', room);
     if (!basket) {
       this.finished = true;
       return;
     }
-    const roomId = r.roomId ?? g.room?.id ?? 'living';
-    const basketTarget = basketTargets(g.room, basket);
+    const basketTarget = basketTargets(room, basket);
     // a sock already on the floor (dragged/popped from the basket) comes first
-    const floorSock = g.dirt.find((d) => d.type === 'sock' && d.drop <= 0);
+    const floorSock = nearestItem(g.dirt.items, r, (d) =>
+      d.roomId === roomId && d.type === 'sock' && d.drop <= 0
+    );
     if (floorSock) {
       this.state = {
         phase: 'approach',
@@ -84,14 +106,14 @@ export const SockGrab = {
     // otherwise one tumbles in out of nowhere (laundry day!)
     let p = null;
     for (let i = 0; i < 40; i++) {
-      const cand = g.room.randomFloorPoint(60);
+      const cand = room.randomFloorPoint(60);
       const d = dist(cand.x, cand.y, r.x, r.y);
-      if (d > 180 && d < 620 && cand.y > 380 && g.room.isFree(cand.x, cand.y, 70, { solidTable: true })) {
+      if (d > 180 && d < 620 && cand.y > 380 && room.isFree(cand.x, cand.y, 70, { solidTable: true })) {
         p = cand;
         break;
       }
     }
-    if (!p) p = g.room.randomFloorPoint(60);
+    if (!p) p = room.randomFloorPoint(60);
     this.state = {
       phase: 'flyin',
       t: 0,
@@ -256,7 +278,8 @@ export const SockGrab = {
       st.arm.holding = false;
       const x = st.pickedUp ? g.robot.x : st.sock.x;
       const y = st.pickedUp ? g.robot.y + 46 : st.sock.y;
-      st.item = g.dirt.spawn('sock', x, clamp(y, g.room.bounds.minY, g.room.bounds.maxY + 30), {
+      const room = robotRoom(g, st.roomId);
+      st.item = g.dirt.spawn('sock', x, clamp(y, room.bounds.minY, room.bounds.maxY + 30), {
         tint: st.sock.tint,
         roomId: g.robot.roomId ?? st.roomId,
       });
@@ -298,13 +321,17 @@ export const TidyToy = {
   maxDur: 30,
   canRun: (g) => {
     const roomId = g.robot.roomId ?? g.room?.id ?? 'living';
-    return !!roomFurniture(g, 'toybox') &&
+    const room = robotRoom(g, roomId);
+    return !!roomFurniture(g, 'toybox', room) &&
       g.dirt.items.some((item) => item.roomId === roomId && isTidyableToy(item));
   },
   start(g) {
-    const toybox = roomFurniture(g, 'toybox');
     const roomId = g.robot.roomId ?? g.room?.id ?? 'living';
-    const toy = g.dirt.items.find((item) => item.roomId === roomId && isTidyableToy(item));
+    const room = robotRoom(g, roomId);
+    const toybox = roomFurniture(g, 'toybox', room);
+    const toy = nearestItem(g.dirt.items, g.robot, (item) =>
+      item.roomId === roomId && isTidyableToy(item)
+    );
     if (!toybox || !toy) {
       this.finished = true;
       return;
@@ -313,7 +340,7 @@ export const TidyToy = {
       phase: 'approach',
       t: 0,
       roomId,
-      toyboxTarget: toyboxTargets(g.room, toybox),
+      toyboxTarget: toyboxTargets(room, toybox),
       toy,
       held: null, // {type, tint, rot} once grabbed
       arm: { ext: 0, claw: 1, tx: toy.x, ty: toy.y },
@@ -439,8 +466,10 @@ export const TidyToy = {
     // interrupted while holding a toy: it tumbles to the floor
     const st = this.state;
     if (st?.held) {
-      const t = g.dirt.spawn(st.held.type, g.robot.x, g.robot.y + 40, {
-        tint: st.held.tint,
+      const held = st.held;
+      st.held = null;
+      const t = g.dirt.spawn(held.type, g.robot.x, g.robot.y + 40, {
+        tint: held.tint,
         roomId: g.robot.roomId ?? st.roomId,
       });
       t.vx = rand(-70, 70);
