@@ -332,6 +332,13 @@ export class DirtSystem {
     const roomId = this.activeRoomId();
     for (const d of this.items) {
       if (d.roomId !== roomId) continue;
+      if (d.vac && d.type !== 'sparkle') {
+        // little contact shadow grounds each bit of dirt on the floor
+        ctx.fillStyle = 'rgba(70, 40, 20, 0.2)';
+        ctx.beginPath();
+        ctx.ellipse(d.x + 2, d.y + sizeFor(d.type) * 0.16, sizeFor(d.type) * 0.4 * d.scale, sizeFor(d.type) * 0.17 * d.scale, 0, 0, TAU);
+        ctx.fill();
+      }
       ctx.save();
       ctx.translate(d.x, d.y - d.drop);
       ctx.rotate(d.type === 'crumbs' || d.type === 'cereal' ? 0 : Math.sin(d.wobble) * 0.06 + (d.type.startsWith('toy') || d.type === 'sock' ? d.rot * 0.15 : 0));
