@@ -8,13 +8,16 @@ const CONTROL_X = 22;
 const CONTROL_Y = 90;
 const CONTROL_SLOT_X = 10;
 const CONTROL_SLOT_Y = 8;
-const CONTROL_SLOT_STEP = 76;
-const CONTROL_SLOT_W = 70;
+const CONTROL_SLOT_STEP = 92;
+const CONTROL_SLOT_W = 82;
 const CONTROL_SLOT_H = 50;
+const CONTROL_SLOTS = 2;
+// one card holds status gauges (top row) and the buttons (bottom row)
+const CARD = Object.freeze({ x: 22, y: 16, w: 346, h: 144 });
 
 export const HUD_HOME_BUTTON = Object.freeze({
-  cx: 327,
-  cy: 125,
+  cx: 310,
+  cy: 99,
   radius: 45,
   hitRadius: 60,
 });
@@ -46,7 +49,7 @@ export class Hud {
   // This includes the full minimap card, not just its two room buttons.
   hitTest(x, y) {
     if (this.minimap.hitTest(x, y)) return true;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < CONTROL_SLOTS; i++) {
       if (controlSlotHit(x, y, i)) return true;
     }
     if (Math.hypot(x - HUD_HOME_BUTTON.cx, y - HUD_HOME_BUTTON.cy) <
@@ -58,11 +61,11 @@ export class Hud {
   onTap(x, y) {
     const g = this.game;
     if (this.minimap.onTap(x, y)) return true;
-    // mode picker slots (pill origin 22, 90) — generous fat-finger padding
-    const modes = ['vac', 'mop', 'both'];
-    for (let i = 0; i < 3; i++) {
+    // two independent switches: vacuum and mop. Both on = the old "both" mode.
+    // Slots keep generous fat-finger padding.
+    for (let i = 0; i < CONTROL_SLOTS; i++) {
       if (controlSlotHit(x, y, i)) {
-        g.requestMode(modes[i]);
+        g.requestMode(nextMode(g.userMode, i === 0 ? 'vac' : 'mop'));
         return true;
       }
     }
@@ -86,7 +89,24 @@ export class Hud {
     const g = this.game;
     const r = g.robot;
 
-    // ---- bin pill (dust bin + mop-pad dirtiness gauge)
+    // ---- one card: gauges on top, buttons below
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 252, 245, 0.92)';
+    ctx.strokeStyle = 'rgba(90, 60, 20, 0.2)';
+    ctx.lineWidth = 4;
+    roundRect(ctx, CARD.x, CARD.y, CARD.w, CARD.h, 36);
+    ctx.fill();
+    ctx.stroke();
+    // thin divider: status above (look, don't touch), buttons below
+    ctx.strokeStyle = 'rgba(90, 60, 20, 0.12)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(CARD.x + 28, CONTROL_Y - 4);
+    ctx.lineTo(CARD.x + 262, CONTROL_Y - 4);
+    ctx.stroke();
+    ctx.restore();
+
+    // ---- status gauges (dust bin + mop-pad dirtiness)
     this.drawPill(ctx, 22, 16, 245, (pctx) => {
       const fill = r.bin;
       const full = fill > 0.85;
@@ -175,57 +195,46 @@ export class Hud {
       pctx.restore();
     });
 
-    // ---- control pill: vac / mop / both + an always-available dock return
-    this.drawPill(ctx, CONTROL_X, CONTROL_Y, 245, (pctx) => {
-      const modes = ['vac', 'mop', 'both'];
-      const pending = r.mopMode !== g.modeNeedsPads(); // robot's off to the dock to swap gear
-      for (let i = 0; i < 3; i++) {
-        const mode = modes[i];
-        const active = g.userMode === mode;
-        const sx = 10 + i * 76;
-        // slot background
-        pctx.fillStyle = active ? 'rgba(69, 205, 187, 0.95)' : 'rgba(120, 120, 140, 0.12)';
-        roundRect(pctx, sx, 8, 70, 50, 14);
-        pctx.fill();
-        // icons, with a soft glow when this is the chosen one
-        pctx.save();
-        if (active) {
-          pctx.shadowBlur = 6;
-          pctx.shadowColor = 'rgba(255, 255, 255, 0.8)';
-        }
-        const cx = sx + 35;
-        const cy = 33;
-        if (mode === 'both') {
-          drawModeIcon(pctx, this.game, 'vac', cx - 8, cy, 26, active);
-          drawModeIcon(pctx, this.game, 'mop', cx + 8, cy, 26, active);
-        } else {
-          drawModeIcon(pctx, this.game, mode, cx, cy, 36, active);
-        }
-        pctx.restore();
-        // pulsing outline on the active slot while gear is in transit
-        if (pending && active) {
-          pctx.strokeStyle = 'rgba(255, 255, 255, ' + (0.4 + 0.5 * Math.abs(Math.sin(this.t * 5))) + ')';
-          pctx.lineWidth = 3.5;
-          roundRect(pctx, sx, 8, 70, 50, 14);
-          pctx.stroke();
-        }
+    // ---- two switches: vacuum and mop (both on = clean and mop together)
+    ctx.save();
+    ctx.translate(CONTROL_X, CONTROL_Y);
+    const pending = r.mopMode !== g.modeNeedsPads(); // robot's off to the dock to swap gear
+    const on = [g.modeHasVac(), g.modeNeedsPads()];
+    ['vac', 'mop'].forEach((mode, i) => {
+      const active = on[i];
+      const sx = CONTROL_SLOT_X + i * CONTROL_SLOT_STEP;
+      ctx.fillStyle = active ? 'rgba(69, 205, 187, 0.95)' : 'rgba(120, 120, 140, 0.14)';
+      roundRect(ctx, sx, CONTROL_SLOT_Y, CONTROL_SLOT_W, CONTROL_SLOT_H, 16);
+      ctx.fill();
+      ctx.save();
+      if (active) {
+        ctx.shadowBlur = 6;
+        ctx.shadowColor = 'rgba(255, 255, 255, 0.8)';
+      } else {
+        ctx.globalAlpha = 0.55;
       }
-
+      drawModeIcon(ctx, g, mode, sx + CONTROL_SLOT_W / 2, CONTROL_SLOT_Y + CONTROL_SLOT_H / 2, 38, active);
+      ctx.restore();
+      // pulsing outline on the mop switch while pads are in transit
+      if (pending && mode === 'mop') {
+        ctx.strokeStyle = 'rgba(255, 255, 255, ' + (0.4 + 0.5 * Math.abs(Math.sin(this.t * 5))) + ')';
+        ctx.lineWidth = 3.5;
+        roundRect(ctx, sx, CONTROL_SLOT_Y, CONTROL_SLOT_W, CONTROL_SLOT_H, 16);
+        ctx.stroke();
+      }
     });
+    ctx.restore();
 
-    // ---- separate large return-home button beside the mode picker. Its
-    // invisible hit halo remains at least 44 CSS pixels on compact landscape.
+    // ---- big warm-colored return-home button, the only round one in the row
     const returning = !!r.stayDocked;
     const homePop = 1 + Math.max(0, this.homeBtnPop) * 0.18;
     ctx.save();
     ctx.translate(HUD_HOME_BUTTON.cx, HUD_HOME_BUTTON.cy);
     ctx.scale(homePop, homePop);
-    ctx.fillStyle = returning
-      ? 'rgba(69, 205, 187, 0.96)'
-      : 'rgba(255, 252, 245, 0.94)';
+    ctx.fillStyle = returning ? 'rgba(69, 205, 187, 0.96)' : 'rgba(255, 196, 92, 0.98)';
     ctx.strokeStyle = returning
       ? `rgba(255, 255, 255, ${0.65 + 0.3 * Math.abs(Math.sin(this.t * 5))})`
-      : 'rgba(90, 60, 20, 0.22)';
+      : 'rgba(150, 90, 10, 0.35)';
     ctx.lineWidth = returning ? 5 : 4;
     ctx.beginPath();
     ctx.arc(0, 0, HUD_HOME_BUTTON.radius, 0, TAU);
@@ -284,15 +293,10 @@ export class Hud {
     this.minimap.draw(ctx);
   }
 
+  // content-only: the shared card behind it is drawn once in draw()
   drawPill(ctx, x, y, w, drawContent) {
     ctx.save();
     ctx.translate(x, y);
-    ctx.fillStyle = 'rgba(255, 252, 245, 0.92)';
-    ctx.strokeStyle = 'rgba(90, 60, 20, 0.2)';
-    ctx.lineWidth = 4;
-    roundRect(ctx, 0, 0, w, 66, 33);
-    ctx.fill();
-    ctx.stroke();
     drawContent(ctx);
     ctx.restore();
   }
@@ -364,6 +368,16 @@ function drawModeIcon(ctx, game, mode, cx, cy, size, active) {
     roundRect(ctx, cx - size * 0.32, cy + size * 0.3, size * 0.64, size * 0.14, size * 0.07);
     ctx.fill();
   }
+}
+
+// vacuum and mop are two independent switches; at least one stays on.
+export function nextMode(current, pressed) {
+  const vac = current !== 'mop';
+  const mop = current !== 'vac';
+  const nv = pressed === 'vac' ? !vac : vac;
+  const nm = pressed === 'mop' ? !mop : mop;
+  if (!nv && !nm) return current;
+  return nv && nm ? 'both' : nv ? 'vac' : 'mop';
 }
 
 // blend two #rrggbb colors, t=0 -> a, t=1 -> b
