@@ -63,7 +63,9 @@ browser. Sound starts after the first tap (browser autoplay rules).
   blinks its light red and flat-out refuses to head back out. Bouncing red !
   bubbles show exactly what to tap; one tap services it ("Thank you!") and he
   gets right back to it.
-- **Mode picker (left HUD)**: vacuum / mop / vacuum+mop. Deliberately choosing
+- **Vacuum and mop switches (left HUD)**: two independent on/off switches that
+  share one card with the dust-bin and mop-pad gauges. Both on means vacuum+mop,
+  and the last switch that is on can't be turned off. Deliberately choosing
   a different mode still sends him to the dock — "Going to install the mop
   pads" or "Removing the mop pads" — with an undercarriage-cam cutaway showing
   pads clicking on/off. Dirty pads get washed (sudsy cutaway, water tanks
@@ -71,7 +73,7 @@ browser. Sound starts after the first tap (browser autoplay rules).
   wash the mop pads" and heads home. Mop-only mode ignores crumbs entirely —
   vacuuming is not its job.
 - **Send Robo home at any time** by tapping the physical dock or the round
-  return-to-dock button beside the mode picker, even while viewing the kitchen.
+  orange return-to-dock button on the left HUD card, even while viewing the kitchen.
   He immediately stops what he is doing, safely puts down anything held in his
   robotic arm, returns home, services the equipment he is wearing, tops up the
   battery, and naps until Theo taps him awake.
@@ -136,8 +138,8 @@ browser. Sound starts after the first tap (browser autoplay rules).
 - `src/game/fx/` — `Particles` (confetti/dust/sparkles/hearts), `Smears` (milk,
   poop, vomit, and wheel-track cleanup), `Cutaway` (undercarriage cam), and
   `Splash` (title screen).
-- `src/game/ui/Hud.js` and `Minimap.js` — icon-only dust-bin/mop pill, mode
-  picker, return-to-dock button, sound toggle, and the two-room view map. The
+- `src/game/ui/Hud.js` and `Minimap.js` — icon-only status/controls card (dust-bin
+  and mop gauges, vacuum/mop switches, return-to-dock button), sound toggle, and the two-room view map. The
   map tracks the viewed room separately from Robo's physical room; the battery
   intentionally lives on the robot, not in the HUD.
 

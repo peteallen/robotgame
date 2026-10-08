@@ -48,9 +48,9 @@ test('the home hit halo is compact-safe and does not overlap the mode picker', (
     'compact landscape still needs a 44 CSS pixel touch target',
   );
 
-  const lastModeHitRight = 22 + 10 + 2 * 76 + 70 + 6;
+  const lastModeHitRight = 22 + 10 + 1 * 92 + 82 + 6;
   const homeHitLeft = HUD_HOME_BUTTON.cx - HUD_HOME_BUTTON.hitRadius;
-  assert.ok(homeHitLeft > lastModeHitRight, 'home and vacuum+mop targets must not overlap');
+  assert.ok(homeHitLeft > lastModeHitRight, 'home and the vacuum/mop switches must not overlap');
 
   const { hud } = makeHudGame();
   assert.equal(hud.hitTest(HUD_HOME_BUTTON.cx + 59, HUD_HOME_BUTTON.cy), true);
@@ -92,4 +92,29 @@ test('HUD capture makes return-home available during robot room travel', () => {
   Game.prototype.onPointerUp.call(game, HUD_HOME_BUTTON.cx, HUD_HOME_BUTTON.cy);
   assert.equal(calls.summons, 1);
   assert.equal(game.pointerCapture, null);
+});
+
+test('vacuum and mop are independent switches that never both turn off', async () => {
+  const { nextMode } = await import('../src/game/ui/Hud.js');
+  assert.equal(nextMode('vac', 'mop'), 'both');
+  assert.equal(nextMode('mop', 'vac'), 'both');
+  assert.equal(nextMode('both', 'vac'), 'mop');
+  assert.equal(nextMode('both', 'mop'), 'vac');
+  assert.equal(nextMode('vac', 'vac'), 'vac');
+  assert.equal(nextMode('mop', 'mop'), 'mop');
+});
+
+test('tapping the vacuum and mop switches requests the matching combined mode', () => {
+  const { game, calls, hud } = makeHudGame();
+  const vacX = 22 + 10 + 41;
+  const mopX = 22 + 10 + 92 + 41;
+  const y = 90 + 8 + 25;
+
+  game.userMode = 'vac';
+  hud.onTap(mopX, y);
+  game.userMode = 'both';
+  hud.onTap(vacX, y);
+  game.userMode = 'mop';
+  hud.onTap(vacX, y);
+  assert.deepEqual(calls.modes, ['both', 'mop', 'both']);
 });
