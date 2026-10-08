@@ -522,14 +522,25 @@ export class MilkField {
     if (!this.renderCells.length || !this.renderContours.length) return;
 
     ctx.save();
+    // soft contact shadow so the puddle sits on the floor, not on top of it
+    appendContourPath(ctx, this.renderContours[0], shiftedBounds(this.bounds, 2, 3), this.cellSize);
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = 'rgba(60, 35, 20, 0.6)';
+    ctx.fill('evenodd');
     appendContourPath(ctx, this.renderContours[0], this.bounds, this.cellSize);
-    ctx.globalAlpha = 0.62;
+    ctx.globalAlpha = 0.66;
     ctx.fillStyle = '#e9e4cf';
     ctx.fill('evenodd');
-    ctx.globalAlpha = 0.48;
+    // thin film edge: a darker meniscus line with a bright lip just inside it
+    ctx.globalAlpha = 0.55;
     ctx.strokeStyle = '#9f987f';
-    ctx.lineWidth = 2.2;
+    ctx.lineWidth = 2.6;
     ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = '#fffdf2';
+    ctx.lineWidth = 1.2;
+    appendContourPath(ctx, this.renderContours[0], shiftedBounds(this.bounds, -0.8, -0.8), this.cellSize);
     ctx.stroke();
 
     // A brighter high-volume interior makes the boundary read as a thin film
@@ -546,7 +557,7 @@ export class MilkField {
     // Several little ovals made the grid samples look like bubbles or foam.
     const highlight = this.renderCells.reduce((best, cell) =>
       !best || cell.amount > best.amount ? cell : best, null);
-    ctx.globalAlpha = 0.28;
+    ctx.globalAlpha = 0.3;
     ctx.fillStyle = '#ffffff';
     if (highlight) {
       ctx.beginPath();
@@ -560,9 +571,27 @@ export class MilkField {
         Math.PI * 2,
       );
       ctx.fill();
+      // a curved window-light streak plus a pinprick sparkle sell the wetness
+      ctx.globalAlpha = 0.6;
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = Math.max(1.6, highlight.radius * 0.12);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.ellipse(highlight.x, highlight.y, highlight.radius * 1.3, highlight.radius * 0.9, 0, Math.PI * 1.12, Math.PI * 1.5);
+      ctx.stroke();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      const sparkle = Math.max(1.3, highlight.radius * 0.08);
+      ctx.ellipse(highlight.x - highlight.radius * 0.5, highlight.y - highlight.radius * 0.45, sparkle, sparkle, 0, 0, Math.PI * 2);
+      ctx.fill();
     }
     ctx.restore();
   }
+}
+
+function shiftedBounds(bounds, dx, dy) {
+  return { ...bounds, minX: bounds.minX + dx, minY: bounds.minY + dy };
 }
 
 function appendContourPath(ctx, contour, bounds, cellSize) {
