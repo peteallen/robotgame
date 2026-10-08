@@ -102,7 +102,7 @@ export class Hud {
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(CARD.x + 28, CONTROL_Y - 4);
-    ctx.lineTo(CARD.x + 262, CONTROL_Y - 4);
+    ctx.lineTo(CARD.x + 222, CONTROL_Y - 4); // stops short of the home button
     ctx.stroke();
     ctx.restore();
 
